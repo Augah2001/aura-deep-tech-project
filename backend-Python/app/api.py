@@ -18,25 +18,45 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+import io
+import requests
+
+# ... (keep existing imports)
+
 @app.on_event("startup")
 async def startup_event():
     def load_data():
+        # --- IMPORTANT ---
+        # Replace these with the actual public URLs where you've hosted your CSV files.
+        # For example, you can use GitHub Raw, AWS S3, Vercel Blob, etc.
+        primary_data_url = "https://raw.githubusercontent.com/Aitsam-Ahad/Datasets/main/GlobalWeather.csv"
+        fallback_data_url = "https://raw.githubusercontent.com/Aitsam-Ahad/Datasets/main/advanced_iot.csv"
+
         try:
-            # Try loading the new dataset first
-            df = pd.read_csv('GlobalWeather.csv').iloc[:,:28]
-            # Drop the date column if it exists, as it's not a sensor reading
+            # Try loading the new dataset first from the URL
+            print(f"Attempting to download primary dataset from: {primary_data_url}")
+            response = requests.get(primary_data_url)
+            response.raise_for_status()  # Raise an exception for bad status codes
+            df = pd.read_csv(io.StringIO(response.text)).iloc[:,:28]
+            print("Primary dataset downloaded and loaded successfully.")
+            
             if 'date' in df.columns:
                 df = df.drop(columns=['date'])
             raw_data = df.values
-        except FileNotFoundError:
+        except (requests.exceptions.RequestException, pd.errors.EmptyDataError) as e:
+            print(f"Failed to load primary dataset: {e}. Trying fallback.")
             try:
-                # Fallback to the original dataset
-                df_sensor = pd.read_csv('advanced_iot.csv').iloc[:,:28]
+                # Fallback to the original dataset from the URL
+                print(f"Attempting to download fallback dataset from: {fallback_data_url}")
+                response = requests.get(fallback_data_url)
+                response.raise_for_status()
+                df_sensor = pd.read_csv(io.StringIO(response.text)).iloc[:,:28]
+                print("Fallback dataset downloaded and loaded successfully.")
+                
                 raw_data = df_sensor.drop(columns=['date']).values
-            except FileNotFoundError:
-                print("No dataset found (cleaned_iot_data.csv or GlobalWeather.csv). Using dummy data.")
+            except (requests.exceptions.RequestException, pd.errors.EmptyDataError) as e:
+                print(f"Failed to load fallback dataset: {e}. Using dummy data.")
                 raw_data = np.random.rand(20000, 28)
-                 # Default to 10 sensors for dummy data
         
         # Normalize data
         min_vals, max_vals = raw_data.min(axis=0), raw_data.max(axis=0)
