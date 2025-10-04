@@ -1,5 +1,0 @@
-# .vercelignore
-# Ignore local data files to reduce bundle size
-GlobalWeather.csv
-advanced_iot.csv
-datasets.zip
