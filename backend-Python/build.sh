@@ -2,16 +2,16 @@
 # build.sh
 
 # 1. Upgrade pip
-pip install --upgrade pip
+python -m pip install --upgrade pip
 
 # 2. Install dependencies
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 
 # 3. Find site-packages directory
 SITE_PACKAGES=$(python -c "import site; print(site.getsitepackages()[0])")
 
 # 4. Go into site-packages
-cd $SITE_PACKAGES
+cd "$SITE_PACKAGES"
 
 # 5. Remove unnecessary files to reduce size
 echo "Initial size of site-packages: $(du -sh .)"
