@@ -1,32 +1,36 @@
 #!/bin/bash
 # build.sh
 
-# 1. Upgrade pip
-python3.9 -m pip install --upgrade pip
+# Exit immediately if a command exits with a non-zero status.
+set -e
 
-# 2. Install dependencies
+echo "Starting build process..."
+
+# 1. Install dependencies
+echo "Installing dependencies from requirements.txt..."
 python3.9 -m pip install -r requirements.txt
 
-# 3. Find site-packages directory
+# 2. Find site-packages directory
+echo "Locating site-packages directory..."
 SITE_PACKAGES=$(python3.9 -c "import site; print(site.getsitepackages()[0])")
+echo "Found site-packages at: $SITE_PACKAGES"
 
-# 4. Go into site-packages
+# 3. Go into site-packages
 cd "$SITE_PACKAGES"
 
-# 5. Remove unnecessary files to reduce size
+# 4. Remove unnecessary files to reduce size
 echo "Initial size of site-packages: $(du -sh .)"
+echo "Slimming down packages..."
 
-# Remove __pycache__ directories
+# Remove __pycache__ directories and .pyc files
 find . -type d -name "__pycache__" -exec rm -r {} +
-
-# Remove .pyc files
 find . -type f -name "*.pyc" -delete
 
-# Remove testing directories and files
+# Remove testing directories
 find . -type d -name "tests" -exec rm -r {} +
 find . -type d -name "test" -exec rm -r {} +
 
-# Strip shared object files
+# Strip shared object files (if any)
 find . -name "*.so" -type f -exec strip {} \;
 
 # Remove specific large directories from libraries
@@ -38,3 +42,4 @@ rm -rf scipy/special/tests
 rm -rf numba/tests
 
 echo "Final size of site-packages: $(du -sh .)"
+echo "Build process finished."
