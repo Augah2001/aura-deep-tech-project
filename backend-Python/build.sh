@@ -2,13 +2,13 @@
 # build.sh
 
 # 1. Upgrade pip
-python -m pip install --upgrade pip
+python3.9 -m pip install --upgrade pip
 
 # 2. Install dependencies
-python -m pip install -r requirements.txt
+python3.9 -m pip install -r requirements.txt
 
 # 3. Find site-packages directory
-SITE_PACKAGES=$(python -c "import site; print(site.getsitepackages()[0])")
+SITE_PACKAGES=$(python3.9 -c "import site; print(site.getsitepackages()[0])")
 
 # 4. Go into site-packages
 cd "$SITE_PACKAGES"
