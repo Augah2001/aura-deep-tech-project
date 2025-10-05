@@ -4,23 +4,27 @@
 # Exit immediately if a command exits with a non-zero status.
 set -e
 
-echo "Starting aggressive build process..."
+echo "Starting Vercel-optimized build process..."
 
-# 1. Install dependencies
-echo "Installing dependencies from requirements.txt..."
-python3.9 -m pip install -r requirements.txt
+# Define the output directory for Vercel
+OUTPUT_DIR=".vercel/output/src"
+mkdir -p "$OUTPUT_DIR"
 
-# 2. Find site-packages directory
-echo "Locating site-packages directory..."
-SITE_PACKAGES=$(python3.9 -c "import site; print(site.getsitepackages()[0])")
-echo "Found site-packages at: $SITE_PACKAGES"
+# 1. Install dependencies into the output directory
+echo "Installing dependencies from requirements.txt into $OUTPUT_DIR..."
+python3.9 -m pip install -t "$OUTPUT_DIR" -r requirements.txt
 
-# 3. Go into site-packages
-cd "$SITE_PACKAGES"
+# 2. Copy application files into the output directory
+echo "Copying application files (main.py, app/) into $OUTPUT_DIR..."
+cp main.py "$OUTPUT_DIR/"
+cp -r app "$OUTPUT_DIR/"
+
+# 3. Go into the output directory to perform slimming
+cd "$OUTPUT_DIR"
 
 # 4. Remove unnecessary files to reduce size
-echo "Initial size of site-packages: $(du -sh .)"
-echo "Starting aggressive slimming..."
+echo "Initial size of $OUTPUT_DIR: $(du -sh .)"
+echo "Starting aggressive slimming of dependencies..."
 
 # Remove __pycache__ directories and .pyc files
 echo "Removing caches..."
@@ -54,5 +58,6 @@ rm -rf numba/tests
 find . -type f -name "*.md" -delete
 find . -type f -name "*.txt" -delete
 
-echo "Final size of site-packages: $(du -sh .)"
-echo "Aggressive build process finished."
+echo "Final size of $OUTPUT_DIR: $(du -sh .)"
+echo "Vercel-optimized build process finished."
+
