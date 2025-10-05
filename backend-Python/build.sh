@@ -24,19 +24,26 @@ echo "Starting aggressive slimming of dependencies..."
 
 # This is very aggressive. It can save a lot of space but might break packages
 # that rely on this metadata at runtime. Test your application thoroughly.
-echo "Removing package metadata..."
-find . -type d -name "*.dist-info" -exec rm -r {} +
+echo "Removing package metadata (.dist-info, .egg-info)..."
+find . -type d -name "*.dist-info" -exec rm -rf {} +
 find . -type d -name "*.egg-info" -exec rm -rf {} +
 
 # Strip shared object files (if any)
-echo "Stripping binaries..."
+echo "Stripping binaries (.so files)..."
 find . -type f -name "*.so" -exec strip {} \; 2>/dev/null || true
 
+# Remove specific large, non-essential directories from data science packages
+echo "Removing known large, non-essential directories from installed packages..."
+rm -rf pandas/tests
+rm -rf numpy/tests
+rm -rf scipy/tests
+rm -rf numba/tests
+
 # Remove caches, documentation, tests, and other non-essential files
-echo "Removing caches, docs, and tests..."
+echo "Removing general caches, docs, and tests..."
 find . -type d -name "__pycache__" -exec rm -rf {} +
 find . -type d -name "tests" -o -name "test" -o -name "doc" -o -name "docs" -o -name "examples" -exec rm -rf {} +
-find . -type f -name "*.pyc" -o -name "*.pyi" -o -name "*.o" -o -name "*.a" -o -name "*.md" -o -name "*.rst" -o -name "*.txt" -delete
+find . -type f \( -name "*.pyc" -o -name "*.pyi" -o -name "*.o" -o -name "*.a" -o -name "*.md" -o -name "*.rst" -o -name "*.txt" -o -name "*.html" -o -name "*.csv" \) -delete
 
 echo "Final dependency size: $(du -sh .)"
 echo "Slimming finished."
