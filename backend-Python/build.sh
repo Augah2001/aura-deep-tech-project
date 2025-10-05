@@ -7,20 +7,29 @@ set -e
 echo "Starting Vercel-optimized build process..."
 
 # Define the output directory for Vercel
-OUTPUT_DIR=".vercel/output/src"
-mkdir -p "$OUTPUT_DIR"
+FUNCTION_DIR=".vercel/output/functions/main.func"
+mkdir -p "$FUNCTION_DIR"
 
-# 1. Install dependencies into the output directory
-echo "Installing dependencies from requirements.txt into $OUTPUT_DIR..."
-python3.9 -m pip install -t "$OUTPUT_DIR" -r requirements.txt
+# 1. Install dependencies into the function directory
+echo "Installing dependencies from requirements.txt into $FUNCTION_DIR..."
+python3.9 -m pip install -t "$FUNCTION_DIR" -r requirements.txt
 
-# 2. Copy application files into the output directory
-echo "Copying application files (main.py, app/) into $OUTPUT_DIR..."
-cp main.py "$OUTPUT_DIR/"
-cp -r app "$OUTPUT_DIR/"
+# 2. Copy application files into the function directory
+echo "Copying application files (main.py, app/) into $FUNCTION_DIR..."
+cp main.py "$FUNCTION_DIR/"
+cp -r app "$FUNCTION_DIR/"
 
-# 3. Go into the output directory to perform slimming
-cd "$OUTPUT_DIR"
+# 3. Create vc-config.json to specify the handler
+echo "Creating vc-config.json in $FUNCTION_DIR..."
+cat << EOF > "$FUNCTION_DIR/vc-config.json"
+{
+  "runtime": "python3.9",
+  "handler": "main.app"
+}
+EOF
+
+# 4. Go into the function directory to perform slimming
+cd "$FUNCTION_DIR"
 
 # 4. Remove unnecessary files to reduce size
 echo "Initial size of $OUTPUT_DIR: $(du -sh .)"
