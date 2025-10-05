@@ -35,9 +35,10 @@ find . -type f -name "*.so" -exec strip {} \; 2>/dev/null || true
 # Remove specific large, non-essential directories from data science packages
 echo "Removing known large, non-essential directories from installed packages..."
 rm -rf pandas/tests
-rm -rf pandas/io/formats/templates
 rm -rf numpy/tests
+rm -rf numpy/core/tests
 rm -rf numpy/f2py
+
 rm -rf scipy/tests
 # WARNING: The following lines remove large parts of scipy.
 # If your code uses these modules, you must comment out the corresponding line.
@@ -45,8 +46,12 @@ rm -rf scipy/fftpack
 rm -rf scipy/linalg
 rm -rf scipy/special
 rm -rf scipy/integrate
+rm -rf scipy/sparse
+
 rm -rf numba/tests
 rm -rf numba/targets
+rm -rf numba/cext
+rm -rf numba/core/runtime/_cache
 
 # Remove caches, documentation, tests, and other non-essential files
 echo "Removing general caches, docs, and tests..."
