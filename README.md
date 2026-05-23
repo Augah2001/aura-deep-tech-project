@@ -1,19 +1,20 @@
 
-# AURA: An Autonomous, Self-Optimizing Sensor Network
+# AURA: Refined Optimized Sensor Network
 
-AURA (Autonomous Unsupervised Retraining Algorithm) is a sophisticated simulation of a smart sensor network that intelligently manages its own power consumption. It features a cutting-edge, self-optimizing control system that continuously learns from and adapts to the data it processes, ensuring maximum efficiency and predictive accuracy without human intervention.
+AURA (Autonomous Unsupervised Retraining Algorithm) is a smart sensor-network benchmark and visualization project. This copy is wired to the cleaned refined AURA algorithm package in the parent `aura_algorithm_clean` folder.
 
-This project demonstrates a "hybrid model" approach where the system operates in a power-saving "shadow mode" and automatically triggers a retraining pipeline when its performance degrades or after a set interval. This ensures the network remains robust and efficient over time.
+The backend now launches the refined optimized benchmark through `aura_refined_benchmark.run_refined_aura_benchmark()`, using the CUDA/C++ fused training path when available and the optimized CPU/PyTorch fallback otherwise. The frontend still uses the same `/start`, `/pause`, `/reset`, and `/status` API, but the status stream is now a replay of the refined algorithm's learned sensor activity and benchmark metrics.
 
 The simulation is visualized and controlled through a sleek, real-time web interface built with Next.js, offering a comprehensive view of the network's state, performance, and the AURA algorithm in action.
 
 ## Key Features
 
-- **Intelligent Power Saving:** Implements the AURA algorithm to dynamically deactivate and reactivate sensors, significantly reducing power consumption.
-- **Autonomous Retraining:** The system automatically detects performance degradation and retrains itself on fresh data to optimize its internal parameters.
+- **Intelligent Power Saving:** Runs the refined Intelligent AURA policy with a target active-sensor budget band.
+- **Optimized Training:** Uses the cleaned PyTorch/C++/CUDA implementation from the parent algorithm package.
 - **Real-time Visualization:** A rich Next.js frontend provides a live 3D view of the sensor farm, detailed metrics, and interactive charts.
-- **Advanced Simulation Core:** The backend, built with Python and FastAPI, runs a sophisticated, multi-threaded simulation of the sensor network.
-- **Differential Evolution Learner:** Utilizes a powerful optimization algorithm to discover the most effective parameters for the power-saving logic during retraining cycles.
+- **FastAPI Runtime Adapter:** The backend runs the refined benchmark in a background thread and exposes frontend-compatible status.
+- **Plug-and-play Sensor API:** External gateways can submit readings and request AURA sleep/wake command bits through `/api/v1`.
+- **Persistent Evidence Store:** Uploaded datasets and benchmark history are persisted in PostgreSQL when configured, with SQLite fallback.
 - **Benchmarking Suite:** Includes Jupyter notebooks for analyzing and evaluating the performance of the AURA algorithm.
 
 ## System Architecture
@@ -21,10 +22,10 @@ The simulation is visualized and controlled through a sleek, real-time web inter
 The project is composed of three main components:
 
 1.  **Backend (Python/FastAPI):**
-    - Serves the core simulation logic.
-    - Manages the state of the sensor network.
-    - Implements the AURA algorithm and the autonomous retraining pipeline.
-    - Exposes a REST API for the frontend to interact with the simulation.
+    - Serves the refined optimized AURA runtime.
+    - Calls the cleaned algorithm package in the parent folder.
+    - Replays learned active/off sensor masks for the UI.
+    - Exposes dashboard APIs and versioned `/api/v1` integration APIs for external sensor systems.
 
 2.  **Frontend (Next.js/React):**
     - Provides a user-friendly web interface for controlling and monitoring the simulation.
@@ -94,17 +95,57 @@ Once both the backend and frontend servers are running, open your web browser an
 - **Parameters:** You can adjust the core AURA parameters and the autonomous retraining triggers before starting the simulation.
 - **Charts:** Click the "Show Charts" button to view real-time graphs of the system's fidelity and power-saving performance.
 
-## The AURA Algorithm
+## The Refined AURA Algorithm
 
-The core of the power-saving logic is the AURA (Autonomous Unsupervised Retraining Algorithm) index. This mathematical function measures the degree of informational redundancy among a small group of sensors. When the AURA index for a group of sensors exceeds a certain threshold, it indicates that their readings are highly correlated. The system then deactivates the "noisiest" sensor in that group for a set duration, saving power without a significant loss of information.
+The active backend entry point is `backend-Python/app/refined_runtime.py`. It imports the parent clean package and runs:
 
-## Autonomous Retraining
+```python
+from aura_refined_benchmark import run_refined_aura_benchmark
+```
 
-AURA's most advanced feature is its ability to self-optimize. The system operates in one of two main phases:
+Useful `/start` overrides can be sent as JSON:
 
-1.  **Shadow Operation:** The default power-saving mode. During this phase, the system occasionally performs "undercover" quality checks by predicting a sensor's value and comparing it to the true reading. This allows it to calculate its own predictive accuracy (fidelity).
+```json
+{
+  "BENCH_SENSORS": 500,
+  "BENCH_STEPS": 120,
+  "BENCH_EPOCHS": 20,
+  "BENCH_MAX_PAIRS": 10000,
+  "CELL8_FORCE_CPU": false
+}
+```
 
-2.  **Collecting & Learning:** If the system's fidelity drops below a set threshold, or if a maximum time interval has passed, it automatically enters a data collection phase. It reactivates all sensors to gather a fresh, high-quality dataset. This data is then passed to the "learner" module, which uses a Differential Evolution algorithm to find a new, optimized set of parameters (threshold and duration) for the AURA algorithm. Once complete, the new parameters are seamlessly deployed, and the system returns to shadow operation.
+The older Numba threshold/duration simulator files are still present for reference, but the FastAPI app no longer uses them.
+
+## Plug-and-play Sensor API
+
+External systems can integrate with AURA without using the dashboard. The stable integration surface is:
+
+```text
+http://127.0.0.1:8000/api/v1
+```
+
+Common endpoints:
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/api/v1/health` | GET | Check service, storage, runtime, and hardware mode |
+| `/api/v1/readings` | POST | Submit sensor readings for a named network |
+| `/api/v1/policy/latest` | GET | Get the latest AURA command policy |
+| `/api/v1/policy/evaluate` | POST | Submit readings and receive command bits in one request |
+| `/api/v1/hardware/sync` | POST | Send command bits through the Arduino serial bridge |
+
+Example request:
+
+```json
+{
+  "network_id": "farm-zone-1",
+  "node_ids": [0, 1, 2, 3],
+  "readings": [0.42, 0.44, 0.91, 0.43]
+}
+```
+
+The response includes a `command_bits` string where `0` means active/on and `1` means sleep/off. Full details are in `../docs/aura_sensor_integration_api.md`.
 
 ## Benchmarking
 

@@ -1,0 +1,14 @@
+   ▲ Next.js 15.4.2 (Turbopack)
+   - Local:        http://localhost:3005
+   - Network:      http://10.13.4.169:3005
+
+ ✓ Starting...
+Creating turbopack project {
+  dir: 'C:\\Users\\Augustine\\Documents\\projects\\aura kernel\\aura_algorithm_clean\\aura-deep-tech-project\\frontend-Next.js',
+  testMode: true
+}
+ ✓ Ready in 3.6s
+ ○ Compiling / ...
+ ✓ Compiled / in 12.4s
+ GET / 200 in 2029ms
+ GET / 200 in 286ms

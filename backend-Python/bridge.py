@@ -9,7 +9,7 @@ import sys
 # --- Configuration ---
 # IMPORTANT: Replace with your Arduino Mega's COM port
 # Find this in the Arduino IDE under Tools > Port (e.g., 'COM3' on Windows)
-MEGA_PORT = 'COM12' 
+MEGA_PORT = 'COM16' 
 BAUD_RATE = 115200
 API_URL = 'http://127.0.0.1:8000/status'
 
