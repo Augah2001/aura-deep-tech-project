@@ -9,6 +9,8 @@
       1 = sleeping/off
 
   This sketch maps the first 28 visible AURA nodes to Arduino Mega pins 22-49.
+  In the demonstration board layout, node 10 maps to pin 31 and uses the
+  yellow LED shown in the hardware illustration.
   Attach one LED per pin through a resistor to GND. An LED ON means the node is
   active. An LED OFF means AURA has suppressed that node.
 */

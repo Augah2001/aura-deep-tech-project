@@ -37,6 +37,29 @@ class ArduinoSerialBridge:
             self.last_error = f"{type(exc).__name__}: {exc}"
         return self.status()
 
+    def list_ports(self) -> dict[str, Any]:
+        try:
+            from serial.tools import list_ports  # type: ignore
+        except Exception as exc:
+            return {
+                "ports": [],
+                "error": f"pyserial unavailable: {exc}",
+            }
+
+        ports = [
+            {
+                "device": port.device,
+                "description": port.description,
+                "hwid": port.hwid,
+            }
+            for port in list_ports.comports()
+        ]
+        return {
+            "ports": ports,
+            "selected": self.port,
+            "connected": self.connected,
+        }
+
     def disconnect(self) -> dict[str, Any]:
         if self._serial is not None:
             try:

@@ -3,6 +3,7 @@
 export interface Sensor {
     id: number;
     is_off: boolean;
+    is_shadow?: boolean;
 }
 
 export interface SensorDetail {
@@ -13,7 +14,42 @@ export interface SensorDetail {
     reading: number;
     estimated_reading: number;
     abs_error: number;
+    is_shadow?: boolean;
     decision_reason: string;
+}
+
+export interface ShadowValidation {
+    sample_rate: number;
+    mse_threshold: number;
+    sample_count: number;
+    shadow_mse: number;
+    recent_shadow_mse: number;
+    last_shadow_abs_error: number;
+    last_shadow_sensor_count: number;
+    active_shadow_sensor_ids: number[];
+    last_sample_timestep: number | null;
+}
+
+export interface RetrainPolicy {
+    recommended: boolean;
+    required: boolean;
+    reason?: string | null;
+    last_retrain_timestep: number;
+    steps_since_retrain: number;
+    global_period_steps: number;
+    global_period_fraction: number;
+    steps_until_forced_retrain: number;
+    shadow_mse_threshold: number;
+}
+
+export interface TrendPoint {
+    timestep: number;
+    power_saved: number;
+    active_percent: number;
+    recall: number;
+    shadow_mse: number;
+    shadow_threshold: number;
+    retrain_required: boolean;
 }
 
 export interface PolicyMetrics {
@@ -124,7 +160,15 @@ export interface Status {
     history?: BenchmarkRun[];
     storage?: StorageStatus;
     diagnostics?: DiagnosticEntry[];
+    live_events?: RuntimeEvent[];
     status_transport?: string;
+    replay_speed?: number;
+    replay_progress_pct?: number;
+    last_policy_update?: string | null;
+    active_anomalies?: number;
+    shadow_validation?: ShadowValidation;
+    retrain_policy?: RetrainPolicy;
+    trend_history?: TrendPoint[];
 }
 
 export interface ChartDataPoint {
@@ -159,6 +203,12 @@ export interface BenchmarkRun {
 export interface DiagnosticEntry {
     time: string;
     severity: string;
+    source: string;
+    message: string;
+}
+
+export interface RuntimeEvent {
+    time: string;
     source: string;
     message: string;
 }

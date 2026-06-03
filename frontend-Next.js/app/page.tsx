@@ -10,12 +10,11 @@ import {
     CheckCircle2,
     Cpu,
     Database,
-    Download,
     Pause,
     Play,
     Radar,
-    RotateCcw,
     Satellite,
+    Send,
     Upload,
     Zap,
 } from 'lucide-react';
@@ -34,7 +33,7 @@ import {
     YAxis,
 } from 'recharts';
 import { API_BASE_URL, useStatus } from './hooks/useStatus';
-import type { BenchmarkRun, DatasetSummary, DiagnosticEntry, PolicyMetrics, Status } from './lib/types';
+import type { BenchmarkRun, DatasetSummary, DiagnosticEntry, PolicyMetrics, Status, TrendPoint } from './lib/types';
 
 const FarmScene = dynamic(() => import('./components/FarmScene'), {
     ssr: false,
@@ -138,17 +137,145 @@ const backendModes = {
 
 type DemoPresetKey = keyof typeof demoPresets;
 type BackendModeKey = keyof typeof backendModes;
-type AppTab = 'live' | 'benchmarks' | 'data' | 'algorithm' | 'kernel' | 'hardware' | 'diagnostics' | 'export';
+type AppTab = 'live' | 'playground' | 'benchmarks' | 'data' | 'algorithm' | 'kernel' | 'hardware' | 'diagnostics';
+type HardwareTarget = 'mega_simulation' | 'esp32_experiment';
+type WhatIfControls = {
+    recallPriority: number;
+    powerPriority: number;
+    activeBudgetPct: number;
+    anomalyStrictness: number;
+    shadowSamplePct: number;
+    globalRetrainPct: number;
+};
+type ChallengeSettings = {
+    reduceSensorsPct: number;
+    injectAnomaly: boolean;
+    simulateDrift: boolean;
+    addNoise: boolean;
+    removeSensor: boolean;
+    increaseRedundancy: boolean;
+};
+type ChallengeToggleKey = Exclude<keyof ChallengeSettings, 'reduceSensorsPct'>;
+type PanelistQuestionKey = 'balanced' | 'morePower' | 'moreRecall' | 'sensorFailure' | 'whyRetrain' | 'cudaFast';
+type SerialPortOption = {
+    device: string;
+    description?: string;
+    hwid?: string;
+};
 
-const appTabs: { key: AppTab; label: string }[] = [
-    { key: 'live', label: 'Live Prototype' },
+const scenarioPresets = {
+    balanced: {
+        label: 'Balanced',
+        detail: 'Keeps the default power/recall compromise for general demonstrations.',
+        controls: { recallPriority: 55, powerPriority: 55, activeBudgetPct: 25, anomalyStrictness: 55, shadowSamplePct: 5, globalRetrainPct: 100 },
+        challenge: { reduceSensorsPct: 0, injectAnomaly: false, simulateDrift: false, addNoise: false, removeSensor: false, increaseRedundancy: false },
+        preset: 'fastCuda',
+    },
+    highPower: {
+        label: 'High Power Saving',
+        detail: 'Uses a tighter active-sensor budget and stronger budget pressure.',
+        controls: { recallPriority: 45, powerPriority: 88, activeBudgetPct: 10, anomalyStrictness: 50, shadowSamplePct: 5, globalRetrainPct: 100 },
+        challenge: { reduceSensorsPct: 0, injectAnomaly: false, simulateDrift: false, addNoise: false, removeSensor: false, increaseRedundancy: true },
+        preset: 'fastCuda',
+    },
+    highRecall: {
+        label: 'High Recall',
+        detail: 'Raises anomaly protection and keeps a larger active set.',
+        controls: { recallPriority: 92, powerPriority: 35, activeBudgetPct: 35, anomalyStrictness: 82, shadowSamplePct: 10, globalRetrainPct: 70 },
+        challenge: { reduceSensorsPct: 0, injectAnomaly: true, simulateDrift: false, addNoise: false, removeSensor: false, increaseRedundancy: false },
+        preset: 'fastCuda',
+    },
+    drift: {
+        label: 'Failure/Drift Scenario',
+        detail: 'Injects drift and increases shadow sampling so retraining evidence appears faster.',
+        controls: { recallPriority: 80, powerPriority: 45, activeBudgetPct: 28, anomalyStrictness: 88, shadowSamplePct: 20, globalRetrainPct: 35 },
+        challenge: { reduceSensorsPct: 0, injectAnomaly: true, simulateDrift: true, addNoise: true, removeSensor: false, increaseRedundancy: false },
+        preset: 'quick',
+    },
+    smartCity: {
+        label: 'Dense Smart City',
+        detail: 'Large redundant network with CUDA/C++ preferred for the defence demo.',
+        controls: { recallPriority: 65, powerPriority: 78, activeBudgetPct: 18, anomalyStrictness: 62, shadowSamplePct: 10, globalRetrainPct: 80 },
+        challenge: { reduceSensorsPct: 0, injectAnomaly: false, simulateDrift: false, addNoise: false, removeSensor: false, increaseRedundancy: true },
+        preset: 'stress',
+    },
+    industrial: {
+        label: 'Industrial Network',
+        detail: 'Stricter anomaly tolerance and shadow checks for safety-critical monitoring.',
+        controls: { recallPriority: 90, powerPriority: 50, activeBudgetPct: 30, anomalyStrictness: 90, shadowSamplePct: 15, globalRetrainPct: 55 },
+        challenge: { reduceSensorsPct: 10, injectAnomaly: true, simulateDrift: false, addNoise: true, removeSensor: true, increaseRedundancy: false },
+        preset: 'fastCuda',
+    },
+    environment: {
+        label: 'Environmental Monitoring',
+        detail: 'Moderate budget with slow drift checks for weather and pollution sensors.',
+        controls: { recallPriority: 70, powerPriority: 70, activeBudgetPct: 22, anomalyStrictness: 65, shadowSamplePct: 5, globalRetrainPct: 90 },
+        challenge: { reduceSensorsPct: 0, injectAnomaly: false, simulateDrift: true, addNoise: true, removeSensor: false, increaseRedundancy: true },
+        preset: 'fastCuda',
+    },
+} as const;
+
+type ScenarioPresetKey = keyof typeof scenarioPresets;
+
+const defaultWhatIfControls: WhatIfControls = scenarioPresets.balanced.controls;
+const defaultChallengeSettings: ChallengeSettings = scenarioPresets.balanced.challenge;
+
+const panelistQuestions: Record<PanelistQuestionKey, {
+    label: string;
+    controls: Partial<WhatIfControls>;
+    challenge: Partial<ChallengeSettings>;
+    backend?: BackendModeKey;
+}> = {
+    balanced: {
+        label: 'Show balanced behavior',
+        controls: scenarioPresets.balanced.controls,
+        challenge: scenarioPresets.balanced.challenge,
+    },
+    morePower: {
+        label: 'Can AURA save more power?',
+        controls: { powerPriority: 92, recallPriority: 45, activeBudgetPct: 10, shadowSamplePct: 5 },
+        challenge: { increaseRedundancy: true },
+    },
+    moreRecall: {
+        label: 'What if recall matters most?',
+        controls: { recallPriority: 95, powerPriority: 35, activeBudgetPct: 36, anomalyStrictness: 88, shadowSamplePct: 10 },
+        challenge: { injectAnomaly: true },
+    },
+    sensorFailure: {
+        label: 'What if sensors fail?',
+        controls: { recallPriority: 78, activeBudgetPct: 28, shadowSamplePct: 15 },
+        challenge: { removeSensor: true, addNoise: true, reduceSensorsPct: 15 },
+    },
+    whyRetrain: {
+        label: 'Why retrain?',
+        controls: { recallPriority: 82, anomalyStrictness: 90, shadowSamplePct: 20, globalRetrainPct: 35 },
+        challenge: { injectAnomaly: true, simulateDrift: true, addNoise: true },
+    },
+    cudaFast: {
+        label: 'Is CUDA faster?',
+        controls: { activeBudgetPct: 25, recallPriority: 60, powerPriority: 60 },
+        challenge: {},
+        backend: 'autoCuda',
+    },
+};
+
+const challengeDisplay: { key: ChallengeToggleKey; label: string }[] = [
+    { key: 'injectAnomaly', label: 'Anomaly' },
+    { key: 'simulateDrift', label: 'Drift' },
+    { key: 'addNoise', label: 'Noise' },
+    { key: 'removeSensor', label: 'Sensor off' },
+    { key: 'increaseRedundancy', label: 'Redundancy' },
+];
+
+const appTabs: { key: AppTab; label: string; technicalOnly?: boolean }[] = [
+    { key: 'live', label: 'Live' },
+    { key: 'playground', label: 'Playground' },
     { key: 'benchmarks', label: 'Benchmarks' },
-    { key: 'data', label: 'Data' },
     { key: 'algorithm', label: 'Algorithm' },
     { key: 'kernel', label: 'Kernel' },
     { key: 'hardware', label: 'Hardware' },
-    { key: 'diagnostics', label: 'Diagnostics' },
-    { key: 'export', label: 'Export' },
+    { key: 'data', label: 'Data', technicalOnly: true },
+    { key: 'diagnostics', label: 'Diagnostics', technicalOnly: true },
 ];
 
 const getInitialTab = (): AppTab => {
@@ -175,40 +302,61 @@ const demoSteps = [
         detail: 'Compare baselines.',
     },
     {
-        title: 'Export Evidence',
-        detail: 'Export results.',
+        title: 'Review Evidence',
+        detail: 'Review benchmark evidence.',
     },
 ] as const;
 
 const fmt = (value?: number, digits = 2) => Number.isFinite(value) ? Number(value).toFixed(digits) : '0.00';
-
-const downloadText = (filename: string, content: string, type: string) => {
-    const blob = new Blob([content], { type });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = filename;
-    link.click();
-    URL.revokeObjectURL(url);
-};
-
-const csvEscape = (value: string | number) => `"${String(value).replace(/"/g, '""')}"`;
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-const phaseLabel = (status: Status) => {
-    if (status.current_phase === 'error') return 'ERROR';
-    if (status.learner_status === 'running') return 'TRAINING';
-    if (status.current_phase === 'shadow_op') return 'REPLAYING';
-    if (status.current_phase === 'finished') return 'FINISHED';
-    return status.is_running ? status.current_phase.toUpperCase() : 'IDLE';
+const displayBackendMode = (mode?: string) => {
+    if (!mode) return 'Pending';
+    return mode.replace(/\s+preferred$/i, '');
 };
 
-const phaseColorClass = (status: Status) => {
-    if (status.current_phase === 'error') return 'border-[#EF4444]/50 bg-[#EF4444]/10 text-[#FCA5A5]';
-    if (status.learner_status === 'running' || status.current_phase === 'collecting') return 'border-[#A78BFA]/50 bg-[#A78BFA]/10 text-[#C4B5FD]';
-    if (status.current_phase === 'shadow_op') return 'border-[#38BDF8]/50 bg-[#38BDF8]/10 text-[#7DD3FC]';
-    if (status.current_phase === 'finished') return 'border-[#22C55E]/50 bg-[#22C55E]/10 text-[#86EFAC]';
-    return 'border-[#223044] bg-[#0A111C] text-[#8EA3B8]';
+const replaySpeedOptions = [0.1, 0.2, 0.3, 0.4, 0.5, 1, 2];
+
+const normalizeReplaySpeed = (speed?: number) => {
+    const reported = speed || 1;
+    return replaySpeedOptions.some(item => Math.abs(item - reported) < 0.01) ? reported : 1;
+};
+
+const controlsToPayload = (
+    controls: WhatIfControls,
+    challenge: ChallengeSettings,
+    baseSensors: number,
+) => {
+    const redundancyMode = challenge.increaseRedundancy;
+    const activeFraction = Math.min(
+        0.75,
+        Math.max(0.05, (redundancyMode ? Math.min(controls.activeBudgetPct, 14) : controls.activeBudgetPct) / 100),
+    );
+    const strictness = controls.anomalyStrictness / 100;
+    const recallWeight = 1.5 + (controls.recallPriority / 100) * 7.5;
+    const budgetWeight = 2.0 + (controls.powerPriority / 100) * 9.0 + (redundancyMode ? 4.0 : 0.0);
+    const reducedSensors = Math.max(12, Math.round(baseSensors * (1 - challenge.reduceSensorsPct / 100)) - (challenge.removeSensor ? 1 : 0));
+    const gateThreshold = Math.max(0.045, 0.16 - strictness * 0.09);
+    const gateSharpness = 40 + strictness * 70;
+    return {
+        BENCH_SENSORS: reducedSensors,
+        AURA_MIN_ACTIVE_FRACTION: Math.max(0.03, activeFraction - 0.04),
+        AURA_MAX_ACTIVE_FRACTION: Math.min(0.90, activeFraction + 0.04),
+        AURA_BUDGET_BAND_WEIGHT: budgetWeight,
+        SAFETY_ANOMALY_WEIGHT: recallWeight,
+        AURA_GATE_THRESHOLD: gateThreshold,
+        AURA_GATE_SHARPNESS: gateSharpness,
+        AURA_SHADOW_SAMPLE_RATE: controls.shadowSamplePct / 100,
+        AURA_SHADOW_MSE_THRESHOLD: Math.max(0.004, 0.045 - strictness * 0.032),
+        AURA_GLOBAL_RETRAIN_PERIOD_FRACTION: Math.max(0.05, controls.globalRetrainPct / 100),
+        AURA_SYNTHETIC_NOISE_STD: challenge.addNoise ? 0.045 : 0.0,
+        AURA_SYNTHETIC_DRIFT_STRENGTH: challenge.simulateDrift ? 0.22 : 0.0,
+        AURA_SYNTHETIC_ANOMALY_EVENTS: challenge.injectAnomaly ? 34 : (redundancyMode ? 8 : 18),
+        AURA_REDUNDANT_CLUSTER_STRENGTH: challenge.increaseRedundancy ? 0.92 : 0.0,
+        AURA_REDUNDANT_GROUP_ANOMALIES: challenge.increaseRedundancy && !challenge.injectAnomaly,
+        AURA_REDUNDANCY_REPRESENTATIVE_GUARD: challenge.increaseRedundancy,
+        AURA_REDUNDANCY_GROUP_SIZE: 18,
+    };
 };
 
 const Panel: FC<{ title?: string; action?: ReactNode; children: ReactNode; className?: string }> = ({ title, action, children, className = '' }) => (
@@ -249,7 +397,7 @@ const BenchmarkTable: FC<{ policies: Record<string, PolicyMetrics> }> = ({ polic
         ['Bandwidth saved', 'power_saved_pct', '%'],
         ['Active sensors', 'active_sensor_pct', '%'],
         ['Anomaly recall', 'anomaly_recall_pct', '%'],
-        ['Global MSE', 'global_reconstruction_mse', ''],
+        ['Global MSE (lower)', 'global_reconstruction_mse', ''],
     ] as const;
     const names = Object.keys(policies);
 
@@ -291,7 +439,7 @@ const BenchmarkTable: FC<{ policies: Record<string, PolicyMetrics> }> = ({ polic
 const PresentationImpactStrip: FC<{ status: Status; policies: Record<string, PolicyMetrics> }> = ({ status, policies }) => {
     const aura = policies['Intelligent AURA'];
     const sleepingNodes = Math.max(0, status.total_sensors - status.active_sensors);
-    const bandwidthSaved = aura?.power_saved_pct ?? status.power_saved_percent;
+    const bandwidthSaved = status.power_saved_percent;
     const recall = aura?.anomaly_recall_pct ?? status.metrics?.anomaly_recall_pct;
 
     return (
@@ -312,12 +460,30 @@ const PresentationImpactStrip: FC<{ status: Status; policies: Record<string, Pol
     );
 };
 
-const PolicyFaceoff: FC<{ policies: Record<string, PolicyMetrics> }> = ({ policies }) => {
-    const aura = policies['Intelligent AURA'];
+const PolicyFaceoff: FC<{ policies: Record<string, PolicyMetrics>; status: Status }> = ({ policies, status }) => {
+    const liveActivePct = status.total_sensors ? (status.active_sensors / status.total_sensors) * 100 : 0;
+    const replayProgress = status.current_phase === 'finished'
+        ? 1
+        : Math.max(0, Math.min(1, (status.replay_progress_pct || 0) / 100));
+    const aura = policies['Intelligent AURA']
+        ? {
+            ...policies['Intelligent AURA'],
+            power_saved_pct: status.power_saved_percent,
+            active_sensor_pct: liveActivePct,
+        }
+        : undefined;
     const baselines = [
-        ['LoRaWAN', policies['LoRaWAN-style'], '#FDBA74'],
-        ['NB-IoT', policies['NB-IoT-style'], '#2DD4BF'],
-    ].filter(([, metrics]) => metrics) as [string, PolicyMetrics, string][];
+        ['LoRaWAN-style', policies['LoRaWAN-style'], '#FDBA74'],
+        ['Budgeted LoRaWAN', policies['Budget-matched LoRaWAN'], '#2DD4BF'],
+    ].filter(([, metrics]) => metrics)
+        .map(([name, metrics, color]) => [
+            name,
+            {
+                ...(metrics as PolicyMetrics),
+                power_saved_pct: ((metrics as PolicyMetrics).power_saved_pct || 0) * replayProgress,
+            },
+            color,
+        ]) as [string, PolicyMetrics, string][];
     const rows: [string, (metrics?: PolicyMetrics) => string, string][] = [
         ['Power', (metrics?: PolicyMetrics) => fmt(metrics?.power_saved_pct), '%'],
         ['Bandwidth', (metrics?: PolicyMetrics) => fmt(metrics?.power_saved_pct), '%'],
@@ -354,27 +520,115 @@ const PolicyFaceoff: FC<{ policies: Record<string, PolicyMetrics> }> = ({ polici
     );
 };
 
-const ArduinoCommandStream: FC<{ status: Status }> = ({ status }) => {
+const ArduinoCommandStream: FC<{ status: Status; startPin?: number; nodeCount?: number }> = ({ status, startPin = 22, nodeCount = 28 }) => {
     const hardware = status.hardware;
     const command = hardware?.last_command || 'pending';
     const ack = hardware?.last_ack || (hardware?.arduino_status === 'connected' ? 'waiting for acknowledgement' : 'preview mode');
+    const commandBits = command === 'pending' ? [] : command.split(',').slice(0, nodeCount);
 
     return (
         <div className="grid gap-3 p-4">
             <div className="rounded-md border border-[#223044] bg-[#050A12] p-3 font-mono text-xs leading-6">
-                <div className="text-[#38BDF8]">AURA -&gt; Mega: <span className="break-all text-[#22C55E]">{command}</span></div>
-                <div className="text-[#A78BFA]">Mega -&gt; AURA: <span className="text-[#E6EDF5]">{ack}</span></div>
+                <div className="text-[#38BDF8]">AURA -&gt; Hardware: <span className="break-all text-[#22C55E]">{command}</span></div>
+                <div className="text-[#A78BFA]">Hardware -&gt; AURA: <span className="text-[#E6EDF5]">{ack}</span></div>
             </div>
             <div className="grid grid-cols-7 gap-1.5">
-                {(command || '').split(',').slice(0, 28).map((bit, index) => {
+                {commandBits.map((bit, index) => {
                     const active = bit.trim() === '0';
                     return (
                         <div key={`${index}-${bit}`} className={`rounded border px-1.5 py-1 text-center font-mono text-[10px] ${active ? 'border-[#38BDF8]/50 bg-[#38BDF8]/15 text-[#7DD3FC]' : 'border-[#64748B]/35 bg-[#64748B]/10 text-[#94A3B8]'}`}>
-                            <div>{22 + index}</div>
+                            <div>{startPin + index}</div>
                             <div className="text-[9px]">{active ? 'ON' : 'OFF'}</div>
                         </div>
                     );
                 })}
+            </div>
+        </div>
+    );
+};
+
+const ReplaySpeedControl: FC<{ speed: number; disabled: boolean; onChange: (speed: number) => void }> = ({ speed, disabled, onChange }) => {
+    const speeds = replaySpeedOptions;
+    return (
+        <label className="flex items-center gap-2 rounded-md border border-[#223044] bg-[#0A111C] px-2 py-1 text-xs font-semibold text-[#8EA3B8]">
+            <span className="hidden uppercase tracking-[0.12em] md:inline">Speed</span>
+            <select
+                value={normalizeReplaySpeed(speed)}
+                onChange={event => onChange(Number(event.target.value))}
+                disabled={disabled}
+                className="rounded bg-[#121C2A] px-2 py-1.5 font-mono text-xs text-[#E6EDF5] outline-none disabled:cursor-not-allowed disabled:opacity-50"
+            >
+                {speeds.map(item => (
+                    <option key={item} value={item}>{item}x</option>
+                ))}
+            </select>
+        </label>
+    );
+};
+
+const LiveSensorStream: FC<{ status: Status }> = ({ status }) => {
+    const rows = (status.sensor_details || []).slice(0, 8);
+    if (!rows.length) return <EmptyState title="No live readings" detail="Run AURA." />;
+
+    return (
+        <div className="overflow-x-auto p-4">
+            <table className="w-full min-w-[560px] border-collapse text-left text-xs">
+                <thead>
+                    <tr className="border-b border-[#223044] uppercase tracking-[0.12em] text-[#8EA3B8]">
+                        <th className="px-2 py-2 font-semibold">Node</th>
+                        <th className="px-2 py-2 font-semibold">State</th>
+                        <th className="px-2 py-2 font-semibold">Reading</th>
+                        <th className="px-2 py-2 font-semibold">Estimate</th>
+                        <th className="px-2 py-2 font-semibold">Error</th>
+                        <th className="px-2 py-2 font-semibold">Anomaly</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {rows.map(row => (
+                        <tr key={row.id} className="border-b border-[#182335] last:border-b-0">
+                            <td className="px-2 py-2 font-mono text-[#E6EDF5]">#{row.id + 1}</td>
+                            <td className={`px-2 py-2 font-semibold ${row.is_shadow ? 'text-[#A78BFA]' : row.is_active ? 'text-[#38BDF8]' : 'text-[#94A3B8]'}`}>{row.is_shadow ? 'SHADOW' : row.is_active ? 'ACTIVE' : 'SLEEP'}</td>
+                            <td className="px-2 py-2 font-mono text-[#B8C7D8]">{fmt(row.reading, 4)}</td>
+                            <td className="px-2 py-2 font-mono text-[#B8C7D8]">{fmt(row.estimated_reading, 4)}</td>
+                            <td className="px-2 py-2 font-mono text-[#A78BFA]">{fmt(row.abs_error, 4)}</td>
+                            <td className={`px-2 py-2 font-semibold ${row.is_anomaly ? 'text-[#F59E0B]' : 'text-[#5F7288]'}`}>{row.is_anomaly ? 'YES' : 'NO'}</td>
+                        </tr>
+                    ))}
+                </tbody>
+            </table>
+        </div>
+    );
+};
+
+const LiveEventLog: FC<{ status: Status }> = ({ status }) => {
+    const events = status.live_events?.length ? status.live_events.slice(-8).reverse() : [];
+    if (!events.length) return <EmptyState title="No live events" detail="Start a run." />;
+    return (
+        <div className="grid gap-2 p-4">
+            {events.map((event, index) => (
+                <div key={`${event.time}-${index}`} className="grid grid-cols-[72px_82px_1fr] gap-2 rounded-md bg-[#0A111C] px-3 py-2 text-xs">
+                    <span className="font-mono text-[#5F7288]">{event.time}</span>
+                    <span className="font-semibold uppercase tracking-[0.12em] text-[#38BDF8]">{event.source}</span>
+                    <span className="text-[#B8C7D8]">{event.message}</span>
+                </div>
+            ))}
+        </div>
+    );
+};
+
+const AnomalyAlert: FC<{ status: Status }> = ({ status }) => {
+    const anomalyRows = (status.sensor_details || []).filter(sensor => sensor.is_anomaly);
+    if (!anomalyRows.length && !status.active_anomalies) return null;
+    return (
+        <div className="absolute left-4 top-4 z-10 max-w-[calc(100%-8rem)] rounded-md border border-[#F59E0B]/55 bg-[#1F1606]/90 px-3 py-2 shadow-[0_12px_30px_rgba(0,0,0,0.35)] backdrop-blur">
+            <div className="flex flex-col gap-1">
+                <div className="flex items-center gap-2 text-xs font-semibold text-[#FDE68A]">
+                    <AlertTriangle size={16} />
+                    Anomaly event active
+                </div>
+                <div className="font-mono text-[11px] text-[#FDE68A]">
+                    {status.active_anomalies || 0} active anomaly nodes | {anomalyRows.length} visible anomaly nodes
+                </div>
             </div>
         </div>
     );
@@ -434,6 +688,7 @@ type RuntimeComparisonRow = {
     recall: number;
     mse: number;
     backend: string;
+    purpose?: string;
 };
 
 const RuntimeComparisonPanel: FC<{
@@ -443,13 +698,13 @@ const RuntimeComparisonPanel: FC<{
 }> = ({ rows, isRunning, onRun }) => (
     <div className="grid gap-4 p-4">
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-            <p className="text-sm leading-6 text-[#8EA3B8]">Controlled quick benchmark across backends.</p>
+            <p className="text-sm leading-6 text-[#8EA3B8]">Runs an extended acceleration stress workload: 128 sensors, 2,000 timesteps, 20 training epochs, and 10,000 pair comparisons.</p>
             <button
                 onClick={onRun}
                 disabled={isRunning}
                 className="rounded-md border border-[#38BDF8]/45 bg-[#38BDF8]/10 px-4 py-2 text-sm font-semibold text-[#7DD3FC] transition hover:bg-[#38BDF8]/20 disabled:cursor-not-allowed disabled:opacity-50"
             >
-                {isRunning ? 'Comparing...' : 'Run Python vs C++ vs CUDA/C++'}
+                {isRunning ? 'Running...' : 'Run acceleration comparison'}
             </button>
         </div>
         {rows.length ? (
@@ -457,43 +712,583 @@ const RuntimeComparisonPanel: FC<{
                 <table className="w-full min-w-[760px] border-collapse text-left text-sm">
                     <thead>
                         <tr className="border-b border-[#223044] text-xs uppercase tracking-[0.12em] text-[#8EA3B8]">
-                            <th className="px-4 py-3 font-semibold">Requested Mode</th>
-                            <th className="px-4 py-3 font-semibold">Actual Backend</th>
-                            <th className="px-4 py-3 font-semibold">Runtime</th>
-                            <th className="px-4 py-3 font-semibold">Training</th>
+                            <th className="px-4 py-3 font-semibold">Backend</th>
+                            <th className="px-4 py-3 font-semibold">Training Time</th>
                             <th className="px-4 py-3 font-semibold">Speedup</th>
-                            <th className="px-4 py-3 font-semibold">Power</th>
-                            <th className="px-4 py-3 font-semibold">Recall</th>
-                            <th className="px-4 py-3 font-semibold">MSE</th>
+                            <th className="px-4 py-3 font-semibold">Purpose</th>
                         </tr>
                     </thead>
                     <tbody>
                         {rows.map(row => (
                             <tr key={row.mode} className="border-b border-[#182335] last:border-b-0">
                                 <td className="px-4 py-3 font-semibold text-[#E6EDF5]">{row.mode}</td>
-                                <td className="px-4 py-3 text-[#B8C7D8]">{row.backend}</td>
-                                <td className="px-4 py-3 font-mono text-[#E6EDF5]">{fmt(row.runtimeSeconds, 3)}s</td>
                                 <td className="px-4 py-3 font-mono text-[#E6EDF5]">{fmt(row.trainingSeconds, 3)}s</td>
                                 <td className="px-4 py-3 font-mono text-[#22C55E]">{fmt(row.speedup, 2)}x</td>
-                                <td className="px-4 py-3 font-mono text-[#22C55E]">{fmt(row.powerSaved)}%</td>
-                                <td className="px-4 py-3 font-mono text-[#F59E0B]">{fmt(row.recall)}%</td>
-                                <td className="px-4 py-3 font-mono text-[#A78BFA]">{fmt(row.mse, 5)}</td>
+                                <td className="px-4 py-3 text-[#9CC7F5]">{row.purpose || row.backend}</td>
                             </tr>
                         ))}
                     </tbody>
                 </table>
             </div>
         ) : (
-            <EmptyState title="No runtime comparison" detail="Run comparison." />
+            <div className="rounded-md border border-[#223044] bg-[#0A111C] px-4 py-5 text-center">
+                <div className="text-sm font-semibold text-[#E6EDF5]">No runtime comparison yet</div>
+                <p className="mt-1 text-sm text-[#8EA3B8]">Run the dedicated acceleration comparison to fill this table.</p>
+            </div>
         )}
     </div>
 );
+
+const SliderControl: FC<{
+    label: string;
+    value: number;
+    min?: number;
+    max?: number;
+    step?: number;
+    suffix?: string;
+    detail: string;
+    onChange: (value: number) => void;
+}> = ({ label, value, min = 0, max = 100, step = 1, suffix = '', detail, onChange }) => (
+    <label className="rounded-md border border-[#223044] bg-[#0A111C] px-3 py-3">
+        <div className="mb-2 flex items-center justify-between gap-3">
+            <span className="text-xs font-semibold uppercase tracking-[0.14em] text-[#8EA3B8]">{label}</span>
+            <span className="font-mono text-sm font-semibold text-[#7DD3FC]">{value}{suffix}</span>
+        </div>
+        <input
+            type="range"
+            min={min}
+            max={max}
+            step={step}
+            value={value}
+            onChange={event => onChange(Number(event.target.value))}
+            className="w-full accent-[#38BDF8]"
+        />
+        <p className="mt-2 text-xs leading-5 text-[#5F7288]">{detail}</p>
+    </label>
+);
+
+const WhatIfControlsPanel: FC<{
+    controls: WhatIfControls;
+    onChange: (controls: WhatIfControls) => void;
+}> = ({ controls, onChange }) => {
+    const update = (key: keyof WhatIfControls, value: number) => onChange({ ...controls, [key]: value });
+    return (
+        <div className="grid gap-3 p-4 md:grid-cols-2">
+            <SliderControl label="Recall priority" value={controls.recallPriority} detail="Higher values keep anomaly-sensitive sensors active." onChange={value => update('recallPriority', value)} />
+            <SliderControl label="Power priority" value={controls.powerPriority} detail="Higher values push AURA toward more sleeping sensors." onChange={value => update('powerPriority', value)} />
+            <SliderControl label="Active sensor budget" value={controls.activeBudgetPct} min={5} max={60} suffix="%" detail="Try 10% to test a strict active-node cap." onChange={value => update('activeBudgetPct', value)} />
+            <SliderControl label="Anomaly strictness" value={controls.anomalyStrictness} detail="Stricter gates make AURA more cautious around unusual readings." onChange={value => update('anomalyStrictness', value)} />
+            <SliderControl label="Shadow sample" value={controls.shadowSamplePct} min={0} max={25} suffix="%" detail="Controls the silent validation sample: 5%, 10%, 20%, etc." onChange={value => update('shadowSamplePct', value)} />
+            <SliderControl label="Global retrain period" value={controls.globalRetrainPct} min={10} max={150} suffix="%" detail="Relative to the current dataset window." onChange={value => update('globalRetrainPct', value)} />
+        </div>
+    );
+};
+
+const ScenarioPresetPanel: FC<{
+    selected: ScenarioPresetKey;
+    onSelect: (key: ScenarioPresetKey) => void;
+}> = ({ selected, onSelect }) => (
+    <div className="grid gap-3 p-4 md:grid-cols-2 xl:grid-cols-3">
+        {(Object.keys(scenarioPresets) as ScenarioPresetKey[]).map(key => {
+            const preset = scenarioPresets[key];
+            const active = selected === key;
+            return (
+                <button
+                    key={key}
+                    onClick={() => onSelect(key)}
+                    className={`rounded-md border px-3 py-3 text-left transition ${
+                        active
+                            ? 'border-[#38BDF8] bg-[#38BDF8]/15'
+                            : 'border-[#223044] bg-[#0A111C] hover:border-[#64748B]'
+                    }`}
+                >
+                    <div className={`text-sm font-semibold ${active ? 'text-[#7DD3FC]' : 'text-[#E6EDF5]'}`}>{preset.label}</div>
+                    <p className="mt-2 text-xs leading-5 text-[#8EA3B8]">{preset.detail}</p>
+                </button>
+            );
+        })}
+    </div>
+);
+
+const ChallengePanel: FC<{
+    settings: ChallengeSettings;
+    backendMode: BackendModeKey;
+    onSettings: (settings: ChallengeSettings) => void;
+    onBackendMode: (mode: BackendModeKey) => void;
+}> = ({ settings, backendMode, onSettings, onBackendMode }) => {
+    const toggle = (key: ChallengeToggleKey) => onSettings({ ...settings, [key]: !settings[key] });
+    const items: { key: ChallengeToggleKey; label: string; detail: string }[] = [
+        { key: 'injectAnomaly', label: 'Inject anomaly', detail: 'Adds extra anomaly events.' },
+        { key: 'simulateDrift', label: 'Simulate drift', detail: 'Gradually shifts sensor readings.' },
+        { key: 'addNoise', label: 'Add noise', detail: 'Raises measurement uncertainty.' },
+        { key: 'removeSensor', label: 'Remove sensor', detail: 'Drops one available node.' },
+        { key: 'increaseRedundancy', label: 'Increase redundancy', detail: 'Creates dense similar sensor clusters.' },
+    ];
+    return (
+        <div className="grid gap-4 p-4">
+            <SliderControl
+                label="Reduce available sensors"
+                value={settings.reduceSensorsPct}
+                min={0}
+                max={70}
+                suffix="%"
+                detail="Shrinks the run before AURA starts."
+                onChange={value => onSettings({ ...settings, reduceSensorsPct: value })}
+            />
+            <div className="grid gap-2 md:grid-cols-2">
+                {items.map(item => (
+                    <button
+                        key={item.key}
+                        onClick={() => toggle(item.key)}
+                        className={`rounded-md border px-3 py-3 text-left transition ${
+                            settings[item.key]
+                                ? 'border-[#F59E0B]/55 bg-[#F59E0B]/12'
+                                : 'border-[#223044] bg-[#0A111C] hover:border-[#64748B]'
+                        }`}
+                    >
+                        <div className={`text-sm font-semibold ${settings[item.key] ? 'text-[#FDE68A]' : 'text-[#E6EDF5]'}`}>{item.label}</div>
+                        <p className="mt-1 text-xs leading-5 text-[#8EA3B8]">{item.detail}</p>
+                    </button>
+                ))}
+            </div>
+            <div className="rounded-md border border-[#223044] bg-[#0A111C] p-3">
+                <div className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-[#8EA3B8]">Backend challenge</div>
+                <div className="flex flex-wrap gap-2">
+                    {(Object.keys(backendModes) as BackendModeKey[]).map(key => (
+                        <button
+                            key={key}
+                            onClick={() => onBackendMode(key)}
+                            className={`rounded px-3 py-2 text-xs font-semibold transition ${
+                                backendMode === key ? 'bg-[#38BDF8] text-[#03111C]' : 'bg-[#121C2A] text-[#8EA3B8] hover:text-[#E6EDF5]'
+                            }`}
+                        >
+                            {backendModes[key].shortLabel}
+                        </button>
+                    ))}
+                </div>
+            </div>
+        </div>
+    );
+};
+
+const AuraAssistantPanel: FC<{ status: Status }> = ({ status }) => {
+    const [question, setQuestion] = useState('');
+    const [answer, setAnswer] = useState<{ mode: string; summary: string; bullets: string[] } | null>(null);
+    const [loading, setLoading] = useState(false);
+
+    const ask = async (prompt = question) => {
+        setLoading(true);
+        try {
+            const response = await fetch(`${API_BASE_URL}/assistant/explain`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ question: prompt, status }),
+            });
+            if (!response.ok) throw new Error('assistant request failed');
+            setAnswer(await response.json());
+        } catch (error) {
+            const aura = status.policy_metrics?.['Intelligent AURA'];
+            setAnswer({
+                mode: 'browser_fallback',
+                summary: `AURA is saving ${fmt(aura?.power_saved_pct ?? status.power_saved_percent)}% power with ${fmt(aura?.anomaly_recall_pct ?? status.metrics?.anomaly_recall_pct)}% anomaly recall. Shadow mode currently samples ${fmt((status.shadow_validation?.sample_rate || 0) * 100, 1)}% of sleeping decisions.`,
+                bullets: ['The backend assistant endpoint was not reachable.', 'The displayed explanation is generated from the current dashboard status.', 'Run a challenge or adjust what-if controls, then ask again.'],
+            });
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const prompts = ['Explain this run', 'Why did AURA sleep sensors?', 'Should retraining happen?', 'Compare with baselines'];
+    return (
+        <div className="grid gap-3 p-4">
+            <div className="flex flex-wrap gap-2">
+                {prompts.map(prompt => (
+                    <button key={prompt} onClick={() => { setQuestion(prompt); void ask(prompt); }} className="rounded-md border border-[#223044] bg-[#0A111C] px-3 py-2 text-xs font-semibold text-[#8EA3B8] hover:border-[#64748B] hover:text-[#E6EDF5]">
+                        {prompt}
+                    </button>
+                ))}
+            </div>
+            <div className="flex gap-2">
+                <input
+                    value={question}
+                    onChange={event => setQuestion(event.target.value)}
+                    placeholder="Ask AURA why a result changed..."
+                    className="min-w-0 flex-1 rounded-md border border-[#223044] bg-[#050A12] px-3 py-2 text-sm text-[#E6EDF5] outline-none focus:border-[#38BDF8]"
+                />
+                <button onClick={() => ask()} disabled={loading} className="inline-flex items-center gap-2 rounded-md bg-[#38BDF8] px-3 py-2 text-sm font-semibold text-[#03111C] disabled:opacity-50">
+                    <Send size={15} /> {loading ? 'Thinking' : 'Ask'}
+                </button>
+            </div>
+            <div className="rounded-md border border-[#223044] bg-[#0A111C] p-3">
+                <div className="mb-2 flex items-center justify-between gap-2">
+                    <span className="text-xs font-semibold uppercase tracking-[0.14em] text-[#8EA3B8]">AURA Assistant</span>
+                    <span className="rounded bg-[#121C2A] px-2 py-1 font-mono text-[10px] uppercase text-[#5F7288]">{answer?.mode || 'ready'}</span>
+                </div>
+                <p className="text-sm leading-6 text-[#B8C7D8]">{answer?.summary || 'Ask a question or run a scenario. The assistant explains only from live AURA metrics and shadow/retraining evidence.'}</p>
+                {!!answer?.bullets?.length && (
+                    <div className="mt-3 grid gap-2">
+                        {answer.bullets.map((item, index) => (
+                            <div key={`${index}-${item}`} className="rounded bg-[#050A12] px-3 py-2 text-xs leading-5 text-[#8EA3B8]">{item}</div>
+                        ))}
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+};
+
+const PlaygroundRunPanel: FC<{
+    status: Status;
+    scenarioLabel: string;
+    backendLabel: string;
+    selectedPresetLabel: string;
+    runtimeComparisonRunning: boolean;
+    onRun: () => void;
+    onRerun: () => void;
+    onReset: () => void;
+    onCompare: () => void;
+}> = ({ status, scenarioLabel, backendLabel, selectedPresetLabel, runtimeComparisonRunning, onRun, onRerun, onReset, onCompare }) => {
+    const aura = status.policy_metrics?.['Intelligent AURA'];
+    const activePct = status.total_sensors ? (status.active_sensors / status.total_sensors) * 100 : aura?.active_sensor_pct || 0;
+    const currentPowerSaved = Math.max(0, Math.min(100, 100 - activePct));
+    const rows = [
+        ['Scenario', scenarioLabel],
+        ['Preset', selectedPresetLabel],
+        ['Backend', backendLabel],
+        ['Phase', status.current_phase],
+        ['Power saved', `${fmt(currentPowerSaved)}%`],
+        ['Recall', `${fmt(aura?.anomaly_recall_pct ?? status.metrics?.anomaly_recall_pct)}%`],
+        ['Active sensors', `${fmt(activePct)}%`],
+        ['Shadow sample', `${fmt((status.shadow_validation?.sample_rate || status.shadow_mode_probability || 0) * 100, 1)}%`],
+    ];
+
+    return (
+        <div className="grid gap-4 p-4">
+            <div className="grid gap-2 md:grid-cols-4">
+                <button
+                    onClick={onRun}
+                    className="inline-flex items-center justify-center gap-2 rounded-md bg-[#38BDF8] px-4 py-3 text-sm font-semibold text-[#03111C] transition hover:bg-[#7DD3FC]"
+                >
+                    {status.is_running ? <Pause size={16} /> : <Play size={16} />}
+                    {status.is_running ? 'Pause run' : 'Run playground'}
+                </button>
+                <button
+                    onClick={onRerun}
+                    className="rounded-md border border-[#22C55E]/45 bg-[#22C55E]/10 px-4 py-3 text-sm font-semibold text-[#86EFAC] transition hover:bg-[#22C55E]/18"
+                >
+                    Rerun scenario
+                </button>
+                <button
+                    onClick={onCompare}
+                    disabled={runtimeComparisonRunning || status.is_running}
+                    className="rounded-md border border-[#A78BFA]/45 bg-[#A78BFA]/10 px-4 py-3 text-sm font-semibold text-[#C4B5FD] transition hover:bg-[#A78BFA]/18 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                    {runtimeComparisonRunning ? 'Comparing...' : 'Compare backends'}
+                </button>
+                <button
+                    onClick={onReset}
+                    className="rounded-md border border-[#223044] bg-[#0A111C] px-4 py-3 text-sm font-semibold text-[#8EA3B8] transition hover:border-[#64748B] hover:text-[#E6EDF5]"
+                >
+                    Reset
+                </button>
+            </div>
+            <div className="grid gap-2 md:grid-cols-4">
+                {rows.map(([label, value]) => (
+                    <div key={label} className="rounded-md bg-[#0A111C] px-3 py-3">
+                        <div className="text-[11px] uppercase tracking-[0.14em] text-[#5F7288]">{label}</div>
+                        <div className="mt-1 truncate font-mono text-sm font-semibold text-[#E6EDF5]">{value}</div>
+                    </div>
+                ))}
+            </div>
+        </div>
+    );
+};
+
+const trendSpecs = [
+    { key: 'power_saved', label: 'Power', color: '#22C55E', suffix: '%' },
+    { key: 'active_percent', label: 'Active', color: '#38BDF8', suffix: '%' },
+    { key: 'recall', label: 'Recall', color: '#F59E0B', suffix: '%' },
+    { key: 'shadow_mse', label: 'Shadow', color: '#A78BFA', suffix: '' },
+] as const;
+
+const LiveTrendCard: FC<{
+    data: TrendPoint[];
+    dataKey: (typeof trendSpecs)[number]['key'];
+    label: string;
+    color: string;
+    suffix: string;
+}> = ({ data, dataKey, label, color, suffix }) => {
+    const latest = data.length ? data[data.length - 1] : null;
+    const value = latest ? Number(latest[dataKey]) : 0;
+    const threshold = dataKey === 'shadow_mse' ? latest?.shadow_threshold : undefined;
+    return (
+        <div className="rounded-lg border border-[#223044] bg-[#0A111C] p-3">
+            <div className="mb-2 flex items-center justify-between gap-2">
+                <span className="text-xs font-semibold uppercase tracking-[0.14em] text-[#8EA3B8]">{label}</span>
+                <span className="font-mono text-sm font-semibold" style={{ color }}>
+                    {dataKey === 'shadow_mse' ? fmt(value, 5) : `${fmt(value)}${suffix}`}
+                </span>
+            </div>
+            <div className="h-28">
+                <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={data}>
+                        <CartesianGrid stroke="#1D2A3A" strokeDasharray="3 3" vertical={false} />
+                        <XAxis dataKey="timestep" hide />
+                        <YAxis hide domain={dataKey === 'shadow_mse' ? ['auto', 'auto'] : [0, 100]} />
+                        <Tooltip
+                            contentStyle={{ background: '#050A12', border: '1px solid #223044', borderRadius: 8, color: '#E6EDF5' }}
+                            formatter={(tooltipValue: number | string) => dataKey === 'shadow_mse' ? fmt(Number(tooltipValue), 6) : `${fmt(Number(tooltipValue))}%`}
+                            labelFormatter={labelValue => `Timestep ${labelValue}`}
+                        />
+                        <Line type="monotone" dataKey={dataKey} stroke={color} strokeWidth={2.4} dot={false} isAnimationActive={false} />
+                        {typeof threshold === 'number' && (
+                            <Line type="monotone" dataKey="shadow_threshold" stroke="#EF4444" strokeWidth={1.5} strokeDasharray="4 4" dot={false} isAnimationActive={false} />
+                        )}
+                    </LineChart>
+                </ResponsiveContainer>
+            </div>
+        </div>
+    );
+};
+
+const LiveTrendsPanel: FC<{ status: Status }> = ({ status }) => {
+    const fallbackPoint: TrendPoint = {
+        timestep: status.timestep || 0,
+        power_saved: status.power_saved_percent || 0,
+        active_percent: status.total_sensors ? (status.active_sensors / status.total_sensors) * 100 : 0,
+        recall: status.policy_metrics?.['Intelligent AURA']?.anomaly_recall_pct ?? status.metrics?.anomaly_recall_pct ?? 0,
+        shadow_mse: status.shadow_validation?.recent_shadow_mse || 0,
+        shadow_threshold: status.shadow_validation?.mse_threshold || 0,
+        retrain_required: Boolean(status.retrain_policy?.required),
+    };
+    const data = status.trend_history?.length ? status.trend_history : [fallbackPoint];
+    return (
+        <div className="rounded-xl border border-[#223044] bg-[#0E1520] p-4">
+            <div className="mb-3 flex items-center justify-between gap-3">
+                <div>
+                    <h3 className="text-sm font-semibold uppercase tracking-[0.18em] text-[#9CC7F5]">Live Trends</h3>
+                    <div className="mt-1 text-xs text-[#5F7288]">Rolling replay evidence for power, activity, recall, and shadow validation.</div>
+                </div>
+                <span className={`rounded-full px-3 py-1 font-mono text-xs ${status.retrain_policy?.required ? 'bg-[#F59E0B]/15 text-[#FDE68A]' : 'bg-[#121C2A] text-[#5F7288]'}`}>
+                    {status.retrain_policy?.required ? 'retrain signal' : `${data.length} points`}
+                </span>
+            </div>
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                {trendSpecs.map(spec => (
+                    <LiveTrendCard key={spec.key} data={data} dataKey={spec.key} label={spec.label} color={spec.color} suffix={spec.suffix} />
+                ))}
+            </div>
+        </div>
+    );
+};
+
+const PlaygroundStudio: FC<{
+    status: Status;
+    controls: WhatIfControls;
+    challenge: ChallengeSettings;
+    selectedScenario: ScenarioPresetKey;
+    selectedQuestion: PanelistQuestionKey;
+    selectedBackendMode: BackendModeKey;
+    selectedPreset: DemoPresetKey;
+    runtimeRows: RuntimeComparisonRow[];
+    runtimeComparisonRunning: boolean;
+    advancedOpen: boolean;
+    onScenario: (key: ScenarioPresetKey) => void;
+    onQuestion: (key: PanelistQuestionKey) => void;
+    onControls: (controls: WhatIfControls) => void;
+    onChallenge: (settings: ChallengeSettings) => void;
+    onBackendMode: (mode: BackendModeKey) => void;
+    onAdvancedOpen: (open: boolean) => void;
+    onRun: () => void;
+    onRerun: () => void;
+    onReset: () => void;
+    onCompare: () => void;
+}> = ({
+    status,
+    controls,
+    challenge,
+    selectedScenario,
+    selectedQuestion,
+    selectedBackendMode,
+    selectedPreset,
+    runtimeRows,
+    runtimeComparisonRunning,
+    advancedOpen,
+    onScenario,
+    onQuestion,
+    onControls,
+    onChallenge,
+    onBackendMode,
+    onAdvancedOpen,
+    onRun,
+    onRerun,
+    onReset,
+    onCompare,
+}) => {
+    const aura = status.policy_metrics?.['Intelligent AURA'];
+    const activePct = status.total_sensors ? (status.active_sensors / status.total_sensors) * 100 : aura?.active_sensor_pct || 0;
+    const powerSaved = status.power_saved_percent ?? aura?.power_saved_pct ?? Math.max(0, Math.min(100, 100 - activePct));
+    const recall = aura?.anomaly_recall_pct ?? status.metrics?.anomaly_recall_pct ?? 0;
+    const retrain = status.retrain_policy;
+    const retrainLabel = retrain?.required ? 'Required' : retrain?.recommended ? 'Watch' : 'Stable';
+    const retrainTone = retrain?.required ? 'text-[#FDE68A]' : retrain?.recommended ? 'text-[#C4B5FD]' : 'text-[#22C55E]';
+    const activeChallenges = challengeDisplay.filter(item => challenge[item.key]).map(item => item.label);
+    const recipe = [
+        ['Scenario', scenarioPresets[selectedScenario].label],
+        ['Question', panelistQuestions[selectedQuestion].label],
+        ['Challenge', activeChallenges.length ? activeChallenges.join(' + ') : 'None'],
+        ['Backend', backendModes[selectedBackendMode].shortLabel],
+    ];
+
+    const challengeToggle = (key: ChallengeToggleKey) => onChallenge({ ...challenge, [key]: !challenge[key] });
+    const primaryScenarios = (['balanced', 'highPower', 'highRecall', 'drift'] as ScenarioPresetKey[]);
+
+    return (
+        <section className="grid gap-4">
+            <div className="rounded-xl border border-[#223044] bg-[#0E1520] p-4 shadow-[0_18px_45px_rgba(0,0,0,0.25)]">
+                <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+                    <div>
+                        <h2 className="text-2xl font-semibold tracking-tight text-white">AURA Playground</h2>
+                        <div className="mt-2 flex flex-wrap gap-2">
+                            {recipe.map(([label, value]) => (
+                                <span key={label} className="rounded-full border border-[#223044] bg-[#0A111C] px-3 py-1.5 text-xs text-[#8EA3B8]">
+                                    {label}: <span className="font-semibold text-[#E6EDF5]">{value}</span>
+                                </span>
+                            ))}
+                        </div>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                        <button onClick={onRun} className="inline-flex items-center gap-2 rounded-lg bg-[#38BDF8] px-5 py-3 text-sm font-semibold text-[#03111C] transition hover:bg-[#7DD3FC]">
+                            {status.is_running ? <Pause size={17} /> : <Play size={17} />}
+                            {status.is_running ? 'Pause' : 'Run current test'}
+                        </button>
+                        <button onClick={onRerun} className="rounded-lg border border-[#22C55E]/45 bg-[#22C55E]/10 px-4 py-3 text-sm font-semibold text-[#86EFAC]">Rerun</button>
+                        <button onClick={onCompare} disabled={runtimeComparisonRunning || status.is_running} className="rounded-lg border border-[#A78BFA]/45 bg-[#A78BFA]/10 px-4 py-3 text-sm font-semibold text-[#C4B5FD] disabled:cursor-not-allowed disabled:opacity-50">
+                            {runtimeComparisonRunning ? 'Comparing' : 'Compare'}
+                        </button>
+                        <button onClick={onReset} className="rounded-lg border border-[#223044] bg-[#0A111C] px-4 py-3 text-sm font-semibold text-[#8EA3B8] hover:text-[#E6EDF5]">Reset</button>
+                    </div>
+                </div>
+
+                <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(360px,0.72fr)]">
+                    <div className="grid gap-4">
+                        <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                            {primaryScenarios.map(key => (
+                                <button
+                                    key={key}
+                                    onClick={() => onScenario(key)}
+                                    className={`rounded-lg border px-4 py-4 text-left transition ${selectedScenario === key ? 'border-[#38BDF8] bg-[#38BDF8]/15' : 'border-[#223044] bg-[#0A111C] hover:border-[#64748B]'}`}
+                                >
+                                    <div className={`text-sm font-semibold ${selectedScenario === key ? 'text-[#7DD3FC]' : 'text-[#E6EDF5]'}`}>{scenarioPresets[key].label}</div>
+                                </button>
+                            ))}
+                        </div>
+
+                        <div className="rounded-lg border border-[#223044] bg-[#0A111C] p-3">
+                            <div className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-[#8EA3B8]">Panelist question</div>
+                            <div className="flex flex-wrap gap-2">
+                                {(Object.keys(panelistQuestions) as PanelistQuestionKey[]).map(key => (
+                                    <button
+                                        key={key}
+                                        onClick={() => onQuestion(key)}
+                                        className={`rounded-full border px-3 py-2 text-sm font-semibold transition ${selectedQuestion === key ? 'border-[#38BDF8] bg-[#38BDF8]/15 text-[#7DD3FC]' : 'border-[#223044] bg-[#121C2A] text-[#8EA3B8] hover:text-[#E6EDF5]'}`}
+                                    >
+                                        {panelistQuestions[key].label}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+
+                        <div className="rounded-lg border border-[#223044] bg-[#0A111C] p-3">
+                            <div className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-[#8EA3B8]">Challenge</div>
+                            <div className="flex flex-wrap gap-2">
+                                {challengeDisplay.map(item => (
+                                    <button
+                                        key={item.key}
+                                        onClick={() => challengeToggle(item.key)}
+                                        className={`rounded-full border px-3 py-2 text-sm font-semibold transition ${challenge[item.key] ? 'border-[#F59E0B]/60 bg-[#F59E0B]/15 text-[#FDE68A]' : 'border-[#223044] bg-[#121C2A] text-[#8EA3B8] hover:text-[#E6EDF5]'}`}
+                                    >
+                                        {item.label}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+
+                        <details className="rounded-lg border border-[#223044] bg-[#0A111C] p-3" open={advancedOpen} onToggle={event => onAdvancedOpen(event.currentTarget.open)}>
+                            <summary className="cursor-pointer text-sm font-semibold text-[#B8C7D8]">Fine tune</summary>
+                            <div className="mt-3 grid gap-4">
+                                <div className="grid gap-2 sm:grid-cols-3">
+                                    {(Object.keys(backendModes) as BackendModeKey[]).map(key => (
+                                        <button key={key} onClick={() => onBackendMode(key)} className={`rounded-md px-3 py-2 text-sm font-semibold ${selectedBackendMode === key ? 'bg-[#38BDF8] text-[#03111C]' : 'bg-[#121C2A] text-[#8EA3B8]'}`}>
+                                            {backendModes[key].shortLabel}
+                                        </button>
+                                    ))}
+                                </div>
+                                <WhatIfControlsPanel controls={controls} onChange={onControls} />
+                                <ChallengePanel settings={challenge} backendMode={selectedBackendMode} onSettings={onChallenge} onBackendMode={onBackendMode} />
+                            </div>
+                        </details>
+                    </div>
+
+                    <div className="grid gap-4">
+                        <div className="rounded-lg border border-[#223044] bg-[#0A111C] p-4">
+                            <div className="mb-3 flex items-center justify-between gap-3">
+                                <div className="text-xs font-semibold uppercase tracking-[0.14em] text-[#8EA3B8]">Current result</div>
+                                <span className="rounded-full bg-[#121C2A] px-3 py-1 font-mono text-xs text-[#5F7288]">{status.current_phase}</span>
+                            </div>
+                            <div className="grid grid-cols-2 gap-2">
+                                <div className="rounded-md bg-[#050A12] p-3">
+                                    <div className="text-[11px] uppercase tracking-[0.12em] text-[#5F7288]">Power saved</div>
+                                    <div className="mt-1 font-mono text-xl font-semibold text-[#22C55E]">{fmt(powerSaved)}%</div>
+                                </div>
+                                <div className="rounded-md bg-[#050A12] p-3">
+                                    <div className="text-[11px] uppercase tracking-[0.12em] text-[#5F7288]">Recall</div>
+                                    <div className="mt-1 font-mono text-xl font-semibold text-[#F59E0B]">{fmt(recall)}%</div>
+                                </div>
+                                <div className="rounded-md bg-[#050A12] p-3">
+                                    <div className="text-[11px] uppercase tracking-[0.12em] text-[#5F7288]">Active</div>
+                                    <div className="mt-1 font-mono text-xl font-semibold text-[#38BDF8]">{fmt(activePct)}%</div>
+                                </div>
+                                <div className="rounded-md bg-[#050A12] p-3">
+                                    <div className="text-[11px] uppercase tracking-[0.12em] text-[#5F7288]">Retrain</div>
+                                    <div className={`mt-1 font-mono text-xl font-semibold ${retrainTone}`}>
+                                        {retrainLabel}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <LiveTrendsPanel status={status} />
+
+                        <AuraAssistantPanel status={status} />
+
+                        {!!runtimeRows.length && (
+                            <div className="rounded-lg border border-[#223044] bg-[#0A111C] p-3">
+                                <div className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-[#8EA3B8]">Backend comparison</div>
+                                <div className="grid gap-2">
+                                    {runtimeRows.map(row => (
+                                        <div key={row.mode} className="flex items-center justify-between rounded-md bg-[#050A12] px-3 py-2 text-sm">
+                                            <span className="font-semibold text-[#E6EDF5]">{row.mode}</span>
+                                            <span className="font-mono text-[#22C55E]">{fmt(row.speedup, 2)}x</span>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            </div>
+        </section>
+    );
+};
 
 const AlgorithmState: FC<{ status: Status }> = ({ status }) => {
     const learned = status.learned_parameters || {};
     const runtime = status.runtime;
     const training = status.training;
     const budget = status.active_budget_band || [20, 30];
+    const shadow = status.shadow_validation;
+    const retrain = status.retrain_policy;
     const items = [
         ['Backend', status.backend_mode || 'pending'],
         ['Run budget', `${fmt(budget[0], 0)}-${fmt(budget[1], 0)}% active`],
@@ -501,6 +1296,10 @@ const AlgorithmState: FC<{ status: Status }> = ({ status }) => {
         ['Total runtime', `${fmt(runtime?.elapsed_seconds, 3)}s`],
         ['Final loss', fmt(training?.final_loss, 6)],
         ['Sensors / steps', `${runtime?.bench_sensors || status.total_sensors} / ${runtime?.bench_steps || 0}`],
+        ['Shadow sample', `${fmt((shadow?.sample_rate || 0) * 100, 1)}%`],
+        ['Shadow MSE', fmt(shadow?.recent_shadow_mse, 6)],
+        ['Retrain due in', `${retrain?.steps_until_forced_retrain ?? status.hybrid_max_timesteps_since_retrain} steps`],
+        ['Retrain status', retrain?.required ? 'required' : retrain?.recommended ? 'recommended' : 'healthy'],
         ['Threshold mean', fmt(learned.redundancy_threshold_mean, 6)],
         ['Gate mean', fmt(learned.gate_threshold_mean, 6)],
     ];
@@ -600,6 +1399,8 @@ const SensorInspector: FC<{ status: Status; selectedSensorId: number | null }> =
     const estimate = detail?.estimated_reading;
     const absError = detail?.abs_error;
     const anomaly = detail?.is_anomaly ?? false;
+    const shadow = detail?.is_shadow ?? sensor.is_shadow ?? false;
+    const redundancyGroup = Math.floor(sensor.id / 4) + 1;
     const reason = detail?.decision_reason || (sensor.is_off
         ? 'AURA marked this node as redundant under the learned active-budget policy.'
         : activePct <= (status.active_budget_band?.[1] || 30)
@@ -639,6 +1440,14 @@ const SensorInspector: FC<{ status: Status; selectedSensorId: number | null }> =
                     <div className="text-[11px] uppercase tracking-[0.14em] text-[#5F7288]">Network load</div>
                     <div className="mt-1 font-mono text-sm font-semibold text-[#38BDF8]">{fmt(activePct)}%</div>
                 </div>
+                <div className="rounded-md bg-[#0A111C] px-3 py-3">
+                    <div className="text-[11px] uppercase tracking-[0.14em] text-[#5F7288]">Redundancy group</div>
+                    <div className="mt-1 font-mono text-sm font-semibold text-[#A78BFA]">G{redundancyGroup}</div>
+                </div>
+                <div className="rounded-md bg-[#0A111C] px-3 py-3">
+                    <div className="text-[11px] uppercase tracking-[0.14em] text-[#5F7288]">Shadow validation</div>
+                    <div className="mt-1 font-mono text-sm font-semibold" style={{ color: shadow ? '#60A5FA' : '#8EA3B8' }}>{shadow ? 'HELD ACTIVE' : 'NO'}</div>
+                </div>
             </div>
             <div className="rounded-md border border-[#223044] bg-[#0A111C] px-3 py-3">
                 <div className="mb-2 text-[11px] uppercase tracking-[0.14em] text-[#5F7288]">Decision explanation</div>
@@ -651,9 +1460,11 @@ const SensorInspector: FC<{ status: Status; selectedSensorId: number | null }> =
 
 const HardwarePanel: FC<{ status: Status }> = ({ status }) => {
     const hardware = status.hardware;
+    const connected = hardware?.arduino_status === 'connected';
+    const modeLabel = connected ? `Connected to ${hardware?.com_port || 'serial device'}` : 'Simulated command preview';
     const items = [
         ['Bridge', hardware?.bridge_status || 'ready'],
-        ['Arduino', hardware?.arduino_status || 'not_connected'],
+        ['Device', hardware?.arduino_status || 'not_connected'],
         ['COM port', hardware?.com_port || 'COM16'],
         ['Baud', hardware?.baud_rate || 115200],
         ['Active nodes', hardware?.active_nodes ?? status.active_sensors],
@@ -663,6 +1474,11 @@ const HardwarePanel: FC<{ status: Status }> = ({ status }) => {
 
     return (
         <div className="grid gap-3 p-4">
+            <div className={`rounded-md border px-3 py-3 ${connected ? 'border-[#22C55E]/45 bg-[#22C55E]/10' : 'border-[#F59E0B]/35 bg-[#F59E0B]/10'}`}>
+                <div className="text-[11px] uppercase tracking-[0.14em] text-[#8EA3B8]">Hardware status</div>
+                <div className={`mt-1 font-mono text-sm font-semibold ${connected ? 'text-[#86EFAC]' : 'text-[#FDE68A]'}`}>{modeLabel}</div>
+                <div className="mt-2 text-xs leading-5 text-[#8EA3B8]">Command bits: <span className="font-mono text-[#E6EDF5]">0 = active/on</span>, <span className="font-mono text-[#E6EDF5]">1 = sleeping/off</span>.</div>
+            </div>
             <div className="grid grid-cols-2 gap-2">
                 {items.map(([label, value]) => (
                     <div key={label} className="rounded-md bg-[#0A111C] px-3 py-3">
@@ -675,7 +1491,113 @@ const HardwarePanel: FC<{ status: Status }> = ({ status }) => {
                 <div className="mb-2 text-[11px] uppercase tracking-[0.14em] text-[#5F7288]">Last command preview</div>
                 <div className="break-all font-mono text-xs leading-5 text-[#22C55E]">{hardware?.last_command || 'pending'}</div>
             </div>
-            <p className="text-xs leading-5 text-[#5F7288]">{hardware?.note || 'Preview of the Arduino sleep/wake command stream.'}</p>
+            <div className="rounded-md border border-[#223044] bg-[#0A111C] px-3 py-3">
+                <div className="mb-2 text-[11px] uppercase tracking-[0.14em] text-[#5F7288]">Defence check</div>
+                <div className="text-xs leading-5 text-[#8EA3B8]">If no board is connected, the UI still shows the exact serial command AURA would send. Close Arduino Serial Monitor before connecting to real hardware.</div>
+            </div>
+            {hardware?.last_error && <div className="rounded-md border border-[#EF4444]/45 bg-[#EF4444]/10 px-3 py-2 text-xs text-[#FCA5A5]">{hardware.last_error}</div>}
+        </div>
+    );
+};
+
+const Esp32ExperimentPanel: FC<{
+    ldr1Pin: string;
+    ldr2Pin: string;
+    led1Pin: string;
+    led2Pin: string;
+    threshold: string;
+    onLdr1Pin: (value: string) => void;
+    onLdr2Pin: (value: string) => void;
+    onLed1Pin: (value: string) => void;
+    onLed2Pin: (value: string) => void;
+    onThreshold: (value: string) => void;
+}> = ({ ldr1Pin, ldr2Pin, led1Pin, led2Pin, threshold, onLdr1Pin, onLdr2Pin, onLed1Pin, onLed2Pin, onThreshold }) => {
+    const experimentRows = [
+        ['Different light', 'LED1 ON, LED2 ON'],
+        ['Similar light', 'LED1 ON, LED2 OFF'],
+    ] as const;
+    const inputs = [
+        ['LDR1 pin', ldr1Pin, onLdr1Pin],
+        ['LDR2 pin', ldr2Pin, onLdr2Pin],
+        ['LED1 pin', led1Pin, onLed1Pin],
+        ['LED2 pin', led2Pin, onLed2Pin],
+        ['Threshold', threshold, onThreshold],
+    ] as const;
+
+    return (
+        <div className="grid gap-3 p-4">
+            <div className="grid gap-2 md:grid-cols-5">
+                {inputs.map(([label, value, onChange]) => (
+                    <label key={label} className="rounded-md bg-[#0A111C] px-3 py-3">
+                        <div className="mb-2 text-[11px] uppercase tracking-[0.14em] text-[#5F7288]">{label}</div>
+                        <input
+                            value={value}
+                            onChange={event => onChange(event.target.value)}
+                            className="w-full rounded-md border border-[#223044] bg-[#050A12] px-2 py-2 font-mono text-sm text-[#E6EDF5] outline-none focus:border-[#38BDF8]"
+                        />
+                    </label>
+                ))}
+            </div>
+            <div className="grid gap-2 md:grid-cols-2">
+                {experimentRows.map(([label, value]) => (
+                    <div key={label} className="flex items-center justify-between gap-4 rounded-md bg-[#0A111C] px-3 py-3">
+                        <span className="text-xs uppercase tracking-[0.12em] text-[#5F7288]">{label}</span>
+                        <span className="text-right font-mono text-sm text-[#E6EDF5]">{value}</span>
+                    </div>
+                ))}
+            </div>
+        </div>
+    );
+};
+
+const MegaSimulationPanel: FC<{
+    startPin: string;
+    nodeCount: string;
+    activeBit: string;
+    sleepBit: string;
+    onStartPin: (value: string) => void;
+    onNodeCount: (value: string) => void;
+    onActiveBit: (value: string) => void;
+    onSleepBit: (value: string) => void;
+}> = ({ startPin, nodeCount, activeBit, sleepBit, onStartPin, onNodeCount, onActiveBit, onSleepBit }) => {
+    const inputs = [
+        ['Start pin', startPin, onStartPin],
+        ['Node count', nodeCount, onNodeCount],
+        ['Active bit', activeBit, onActiveBit],
+        ['Sleep bit', sleepBit, onSleepBit],
+    ] as const;
+    const firstPin = Number(startPin) || 22;
+    const count = Math.max(1, Math.min(Number(nodeCount) || 28, 28));
+    const lastPin = firstPin + count - 1;
+
+    return (
+        <div className="grid gap-3 p-4">
+            <div className="grid gap-2 md:grid-cols-4">
+                {inputs.map(([label, value, onChange]) => (
+                    <label key={label} className="rounded-md bg-[#0A111C] px-3 py-3">
+                        <div className="mb-2 text-[11px] uppercase tracking-[0.14em] text-[#5F7288]">{label}</div>
+                        <input
+                            value={value}
+                            onChange={event => onChange(event.target.value)}
+                            className="w-full rounded-md border border-[#223044] bg-[#050A12] px-2 py-2 font-mono text-sm text-[#E6EDF5] outline-none focus:border-[#38BDF8]"
+                        />
+                    </label>
+                ))}
+            </div>
+            <div className="grid gap-2 md:grid-cols-3">
+                <div className="rounded-md bg-[#0A111C] px-3 py-3">
+                    <div className="text-[11px] uppercase tracking-[0.14em] text-[#5F7288]">Pin range</div>
+                    <div className="mt-1 font-mono text-sm text-[#E6EDF5]">{firstPin}-{lastPin}</div>
+                </div>
+                <div className="rounded-md bg-[#0A111C] px-3 py-3">
+                    <div className="text-[11px] uppercase tracking-[0.14em] text-[#5F7288]">LED ON</div>
+                    <div className="mt-1 font-mono text-sm text-[#7DD3FC]">bit {activeBit}</div>
+                </div>
+                <div className="rounded-md bg-[#0A111C] px-3 py-3">
+                    <div className="text-[11px] uppercase tracking-[0.14em] text-[#5F7288]">LED OFF</div>
+                    <div className="mt-1 font-mono text-sm text-[#CBD5E1]">bit {sleepBit}</div>
+                </div>
+            </div>
         </div>
     );
 };
@@ -694,7 +1616,7 @@ const KernelProofPanel: FC<{ status: Status }> = ({ status }) => {
 
     const statusRows = [
         ['Extension loaded', proof.status.extension_loaded],
-        ['CUDA preferred', proof.status.cuda_preferred],
+        ['CUDA enabled', proof.status.cuda_preferred],
         ['Pair cache', proof.status.pair_cache_enabled],
         ['Fused loss', proof.status.fused_cached_training_loss],
         ['Manual backward', proof.status.manual_backward_enabled],
@@ -887,10 +1809,13 @@ const HistoryPanel: FC<{ runs?: BenchmarkRun[] }> = ({ runs = [] }) => (
     </div>
 );
 
-const DiagnosticsPanel: FC<{ diagnostics?: DiagnosticEntry[]; status: Status; transport: string }> = ({ diagnostics = [], status, transport }) => {
+const DiagnosticsPanel: FC<{ diagnostics?: DiagnosticEntry[]; status: Status; transport: string; onRetrain: () => void }> = ({ diagnostics = [], status, transport, onRetrain }) => {
     const fallbackReason = status.kernel_proof?.status.fallback_reason;
     const hardwareError = status.hardware?.last_error;
+    const shadow = status.shadow_validation;
+    const retrain = status.retrain_policy;
     const rows = [
+        ...(retrain?.reason ? [{ time: '', severity: retrain.required ? 'warning' : 'info', source: 'retrain', message: retrain.reason }] : []),
         ...(fallbackReason ? [{ time: '', severity: 'warning', source: 'kernel', message: fallbackReason }] : []),
         ...(hardwareError ? [{ time: '', severity: 'warning', source: 'hardware', message: hardwareError }] : []),
         ...diagnostics,
@@ -915,6 +1840,36 @@ const DiagnosticsPanel: FC<{ diagnostics?: DiagnosticEntry[]; status: Status; tr
                     <div className="text-xs uppercase tracking-[0.14em] text-[#5F7288]">Storage</div>
                     <div className="mt-1 font-mono text-lg font-semibold text-[#22C55E]">{status.storage?.backend || 'sqlite'}</div>
                 </div>
+                <div className="rounded-md bg-[#0A111C] p-4">
+                    <div className="text-xs uppercase tracking-[0.14em] text-[#5F7288]">Shadow samples</div>
+                    <div className="mt-1 font-mono text-lg font-semibold text-[#A78BFA]">{shadow?.sample_count ?? 0}</div>
+                </div>
+                <div className="rounded-md bg-[#0A111C] p-4">
+                    <div className="text-xs uppercase tracking-[0.14em] text-[#5F7288]">Shadow MSE</div>
+                    <div className="mt-1 font-mono text-lg font-semibold text-[#E6EDF5]">{fmt(shadow?.recent_shadow_mse, 6)}</div>
+                </div>
+                <div className={`rounded-md p-4 ${retrain?.required ? 'border border-[#F59E0B]/45 bg-[#F59E0B]/10' : 'bg-[#0A111C]'}`}>
+                    <div className="text-xs uppercase tracking-[0.14em] text-[#5F7288]">Retrain policy</div>
+                    <div className={`mt-1 font-mono text-lg font-semibold ${retrain?.required ? 'text-[#FDE68A]' : 'text-[#22C55E]'}`}>{retrain?.required ? 'required' : retrain?.recommended ? 'recommended' : 'healthy'}</div>
+                </div>
+                <div className="rounded-md bg-[#0A111C] p-4">
+                    <div className="text-xs uppercase tracking-[0.14em] text-[#5F7288]">Forced retrain in</div>
+                    <div className="mt-1 font-mono text-lg font-semibold text-[#38BDF8]">{retrain?.steps_until_forced_retrain ?? status.hybrid_max_timesteps_since_retrain}</div>
+                </div>
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-[#223044] bg-[#0A111C] px-3 py-3">
+                <div>
+                    <div className="text-xs uppercase tracking-[0.14em] text-[#5F7288]">Shadow validation</div>
+                    <div className="mt-1 text-sm leading-6 text-[#B8C7D8]">
+                        {fmt((shadow?.sample_rate || status.shadow_mode_probability) * 100, 1)}% of policy-sleeping sensors are silently kept active and checked against their predicted value.
+                    </div>
+                </div>
+                <button
+                    onClick={onRetrain}
+                    className="rounded-md border border-[#A78BFA]/40 bg-[#A78BFA]/10 px-3 py-2 text-sm font-semibold text-[#DDD6FE] transition hover:bg-[#A78BFA]/20"
+                >
+                    Retrain now
+                </button>
             </div>
             {rows.length ? rows.slice().reverse().map((item, index) => (
                 <div key={`${item.time}-${item.source}-${index}`} className={`rounded-md border px-3 py-3 ${item.severity === 'error' ? 'border-[#EF4444]/45 bg-[#EF4444]/10' : item.severity === 'warning' ? 'border-[#F59E0B]/45 bg-[#F59E0B]/10' : 'border-[#223044] bg-[#0A111C]'}`}>
@@ -934,16 +1889,58 @@ const ClientOnlyApp: FC = () => {
     const { status, sendCommand, setChartData, transport, fetchStatus } = useStatus();
     const [selectedSensorId, setSelectedSensorId] = useState<number | null>(null);
     const [selectedPreset, setSelectedPreset] = useState<DemoPresetKey>('fastCuda');
+    const [selectedScenario, setSelectedScenario] = useState<ScenarioPresetKey>('balanced');
+    const [selectedQuestion, setSelectedQuestion] = useState<PanelistQuestionKey>('balanced');
+    const [playgroundAdvancedOpen, setPlaygroundAdvancedOpen] = useState(false);
+    const [whatIfControls, setWhatIfControls] = useState<WhatIfControls>(defaultWhatIfControls);
+    const [challengeSettings, setChallengeSettings] = useState<ChallengeSettings>(defaultChallengeSettings);
     const [selectedBackendMode, setSelectedBackendMode] = useState<BackendModeKey>('autoCuda');
     const [presentationMode, setPresentationMode] = useState(true);
     const [compactMode, setCompactMode] = useState(false);
     const [farmView, setFarmView] = useState<'aura' | 'allActive'>('aura');
+    const [replaySpeed, setReplaySpeed] = useState(1);
     const [runtimeComparisonRows, setRuntimeComparisonRows] = useState<RuntimeComparisonRow[]>([]);
     const [runtimeComparisonRunning, setRuntimeComparisonRunning] = useState(false);
     const [activeTab, setActiveTab] = useState<AppTab>(getInitialTab);
     const [datasets, setDatasets] = useState<DatasetSummary[]>([]);
     const [selectedDatasetId, setSelectedDatasetId] = useState<number | null>(null);
     const [selectedColumns, setSelectedColumns] = useState<string[]>([]);
+    const [hardwareTarget, setHardwareTarget] = useState<HardwareTarget>('esp32_experiment');
+    const [hardwarePort, setHardwarePort] = useState('COM16');
+    const [hardwarePorts, setHardwarePorts] = useState<SerialPortOption[]>([]);
+    const [hardwarePortsError, setHardwarePortsError] = useState('');
+    const [hardwarePortsLoading, setHardwarePortsLoading] = useState(false);
+    const [hardwareBaudRate, setHardwareBaudRate] = useState('115200');
+    const [ldr1Pin, setLdr1Pin] = useState('34');
+    const [ldr2Pin, setLdr2Pin] = useState('35');
+    const [led1Pin, setLed1Pin] = useState('25');
+    const [led2Pin, setLed2Pin] = useState('26');
+    const [redundancyThreshold, setRedundancyThreshold] = useState('280');
+    const [megaStartPin, setMegaStartPin] = useState('22');
+    const [megaNodeCount, setMegaNodeCount] = useState('28');
+    const [megaActiveBit, setMegaActiveBit] = useState('0');
+    const [megaSleepBit, setMegaSleepBit] = useState('1');
+
+    const refreshHardwarePorts = async () => {
+        setHardwarePortsLoading(true);
+        setHardwarePortsError('');
+        try {
+            const response = await fetch(`${API_BASE_URL}/hardware/ports`);
+            if (!response.ok) throw new Error('port scan failed');
+            const body: { ports?: SerialPortOption[]; error?: string } = await response.json();
+            const ports = body.ports || [];
+            setHardwarePorts(ports);
+            setHardwarePortsError(body.error || '');
+            if (ports.length && !ports.some(port => port.device === hardwarePort)) {
+                setHardwarePort(ports[0].device);
+            }
+        } catch (error) {
+            setHardwarePorts([]);
+            setHardwarePortsError(error instanceof Error ? error.message : 'port scan failed');
+        } finally {
+            setHardwarePortsLoading(false);
+        }
+    };
 
     useEffect(() => {
         let cancelled = false;
@@ -958,9 +1955,11 @@ const ClientOnlyApp: FC = () => {
             }
         };
         void loadDatasets();
+        void refreshHardwarePorts();
         return () => {
             cancelled = true;
         };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     useEffect(() => {
@@ -970,6 +1969,12 @@ const ClientOnlyApp: FC = () => {
             setSelectedColumns(dataset.selected_columns?.length ? dataset.selected_columns : (dataset.numeric_columns || []).slice(0, 64));
         }
     }, [datasets, selectedDatasetId]);
+
+    useEffect(() => {
+        if (presentationMode && appTabs.find(tab => tab.key === activeTab)?.technicalOnly) {
+            setActiveTab('live');
+        }
+    }, [activeTab, presentationMode]);
 
     if (!status) {
         return <main className="grid min-h-screen place-items-center bg-[#070B10] text-[#E6EDF5]">Connecting to AURA gateway</main>;
@@ -990,6 +1995,9 @@ const ClientOnlyApp: FC = () => {
     const displayedSensors = farmView === 'allActive'
         ? status.sensors.map(sensor => ({ ...sensor, is_off: false }))
         : status.sensors;
+    const farmSensors = displayedSensors.slice(0, 28);
+    const farmSensorDetails = (status.sensor_details || []).slice(0, 28);
+    const effectiveReplaySpeed = status.replay_speed || replaySpeed;
 
     const refreshDatasets = async () => {
         const response = await fetch(`${API_BASE_URL}/datasets`);
@@ -1039,28 +2047,102 @@ const ClientOnlyApp: FC = () => {
         });
     };
 
+    const handleScenarioSelect = (scenario: ScenarioPresetKey) => {
+        const preset = scenarioPresets[scenario];
+        setSelectedScenario(scenario);
+        setWhatIfControls(preset.controls);
+        setChallengeSettings(preset.challenge);
+        setSelectedPreset(preset.preset);
+    };
+
+    const handleQuestionSelect = (question: PanelistQuestionKey) => {
+        const next = panelistQuestions[question];
+        setSelectedQuestion(question);
+        setWhatIfControls({ ...whatIfControls, ...next.controls });
+        setChallengeSettings({ ...challengeSettings, ...next.challenge });
+        if (next.backend) setSelectedBackendMode(next.backend);
+    };
+
+    const buildPlaygroundPayload = () => {
+        const baseSensors = demoPresets[selectedPreset].payload.BENCH_SENSORS;
+        const payload = {
+            ...demoPresets[selectedPreset].payload,
+            ...backendModes[selectedBackendMode].payload,
+            ...controlsToPayload(whatIfControls, challengeSettings, baseSensors),
+            REPLAY_SPEED: replaySpeed,
+        };
+        if (!presentationMode && selectedDatasetId && selectedColumns.length >= 2) {
+            Object.assign(payload, {
+                DATASET_ID: selectedDatasetId,
+                DATASET_COLUMNS: selectedColumns,
+            });
+        }
+        return payload;
+    };
+
     const handleStartPause = () => {
         if (status.is_running) {
             sendCommand('pause');
             return;
         }
         setChartData([]);
-        const payload = {
-            ...demoPresets[selectedPreset].payload,
-            ...backendModes[selectedBackendMode].payload,
-        };
-        if (selectedDatasetId && selectedColumns.length >= 2) {
-            Object.assign(payload, {
-                DATASET_ID: selectedDatasetId,
-                DATASET_COLUMNS: selectedColumns,
-            });
-        }
-        sendCommand('start', payload);
+        sendCommand('start', buildPlaygroundPayload());
     };
 
-    const handleReset = () => {
-        sendCommand('reset');
+    const handlePlaygroundRerun = async () => {
         setChartData([]);
+        await sendCommand('reset');
+        await sleep(350);
+        await sendCommand('start', buildPlaygroundPayload());
+    };
+
+    const handlePresentationModeStart = async () => {
+        setPresentationMode(true);
+        setActiveTab('playground');
+        setSelectedPreset('fastCuda');
+        setSelectedScenario('balanced');
+        setSelectedQuestion('balanced');
+        setSelectedBackendMode('autoCuda');
+        setWhatIfControls({ ...defaultWhatIfControls });
+        setChallengeSettings({ ...defaultChallengeSettings });
+        setChartData([]);
+        await sendCommand('reset');
+        await sleep(350);
+        await sendCommand('diagnostics/clear');
+        await sendCommand('presentation');
+    };
+
+    const handleResetDemo = async () => {
+        setChartData([]);
+        await sendCommand('reset');
+        await sendCommand('diagnostics/clear');
+        await fetchStatus();
+    };
+
+    const handleReplaySpeedChange = (speed: number) => {
+        setReplaySpeed(speed);
+        void sendCommand('replay/speed', { speed });
+    };
+
+    const handleHardwareConnect = () => {
+        sendCommand('hardware/connect', {
+            port: hardwarePort,
+            baud_rate: Number(hardwareBaudRate) || 115200,
+            target: hardwareTarget,
+            experiment: {
+                ldr1_pin: ldr1Pin,
+                ldr2_pin: ldr2Pin,
+                led1_pin: led1Pin,
+                led2_pin: led2Pin,
+                redundancy_threshold: Number(redundancyThreshold) || 280,
+            },
+            simulation: {
+                start_pin: Number(megaStartPin) || 22,
+                node_count: Number(megaNodeCount) || 28,
+                active_bit: megaActiveBit,
+                sleep_bit: megaSleepBit,
+            },
+        });
     };
 
     const fetchStatusSnapshot = async () => {
@@ -1094,12 +2176,50 @@ const ClientOnlyApp: FC = () => {
         setRuntimeComparisonRunning(true);
         setRuntimeComparisonRows([]);
         try {
+            const response = await fetch(`${API_BASE_URL}/runtime/acceleration-comparison`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sensor_count: 128, step_count: 2000, epochs: 20, max_pairs: 10000 }),
+            });
+            if (!response.ok) throw new Error('acceleration comparison request failed');
+            const data = await response.json() as {
+                rows?: Array<{
+                    backend: string;
+                    training_seconds: number;
+                    speedup_vs_pytorch: number;
+                    purpose?: string;
+                    final_loss?: number;
+                    device?: string;
+                }>;
+            };
+            if (data.rows?.length) {
+                setRuntimeComparisonRows(data.rows.map(row => ({
+                    mode: row.backend,
+                    backend: row.device || row.backend,
+                    runtimeSeconds: row.training_seconds,
+                    trainingSeconds: row.training_seconds,
+                    speedup: row.speedup_vs_pytorch,
+                    powerSaved: 0,
+                    recall: 0,
+                    mse: row.final_loss || 0,
+                    purpose: row.purpose,
+                })));
+                return;
+            }
             const rows: RuntimeComparisonRow[] = [];
             const modes: BackendModeKey[] = ['pythonReference', 'cpuCpp', 'autoCuda'];
             const basePayload = {
-                ...demoPresets.quick.payload,
-                BENCH_EPOCHS: Math.min(4, demoPresets.quick.payload.BENCH_EPOCHS),
-                SAFETY_EPOCHS: 4,
+                BENCH_SENSORS: 512,
+                BENCH_STEPS: 160,
+                BENCH_EPOCHS: 16,
+                BENCH_MAX_PAIRS: 18000,
+                CELL8_SHOW_PLOTS: false,
+                SAFETY_EPOCHS: 6,
+                AURA_MIN_ACTIVE_FRACTION: 0.18,
+                AURA_MAX_ACTIVE_FRACTION: 0.26,
+                AURA_SHADOW_SAMPLE_RATE: 0.05,
+                AURA_GLOBAL_RETRAIN_PERIOD_FRACTION: 0.50,
+                REPLAY_SPEED: 8,
             };
 
             for (const mode of modes) {
@@ -1112,13 +2232,14 @@ const ClientOnlyApp: FC = () => {
                 const snapshot = await waitForFinishedRun();
                 const aura = snapshot.policy_metrics?.['Intelligent AURA'];
                 const runtimeSeconds = snapshot.runtime?.elapsed_seconds || 0;
-                const pythonRuntime = rows[0]?.runtimeSeconds || runtimeSeconds || 1;
+                const trainingSeconds = snapshot.training?.seconds || 0;
+                const pythonTraining = rows[0]?.trainingSeconds || trainingSeconds || 1;
                 rows.push({
                     mode: backendModes[mode].label,
                     backend: snapshot.backend_mode || 'pending',
                     runtimeSeconds,
-                    trainingSeconds: snapshot.training?.seconds || 0,
-                    speedup: runtimeSeconds > 0 ? pythonRuntime / runtimeSeconds : 0,
+                    trainingSeconds,
+                    speedup: trainingSeconds > 0 ? pythonTraining / trainingSeconds : 0,
                     powerSaved: aura?.power_saved_pct ?? snapshot.power_saved_percent,
                     recall: aura?.anomaly_recall_pct ?? snapshot.metrics?.anomaly_recall_pct ?? 0,
                     mse: aura?.global_reconstruction_mse ?? snapshot.metrics?.global_reconstruction_mse ?? 0,
@@ -1133,65 +2254,6 @@ const ClientOnlyApp: FC = () => {
         }
     };
 
-    const exportJson = () => {
-        downloadText('aura-dashboard-status.json', JSON.stringify(status, null, 2), 'application/json');
-    };
-
-    const exportCsv = () => {
-        const headers = ['policy', 'power_saved_pct', 'bandwidth_saved_pct', 'active_sensor_pct', 'anomaly_recall_pct', 'global_reconstruction_mse'];
-        const rows = Object.entries(policies).map(([name, metrics]) => [
-            name,
-            fmt(metrics.power_saved_pct, 6),
-            fmt(metrics.power_saved_pct, 6),
-            fmt(metrics.active_sensor_pct, 6),
-            fmt(metrics.anomaly_recall_pct, 6),
-            fmt(metrics.global_reconstruction_mse, 8),
-        ]);
-        const csv = [headers, ...rows].map(row => row.map(csvEscape).join(',')).join('\n');
-        downloadText('aura-benchmark-comparison.csv', csv, 'text/csv');
-    };
-
-    const exportSummary = () => {
-        const aura = policies['Intelligent AURA'];
-        const lorawan = policies['LoRaWAN-style'];
-        const fair = policies['Budget-matched LoRaWAN'];
-        const nbiot = policies['NB-IoT-style'];
-        const summary = [
-            '# AURA Prototype Benchmark Summary',
-            '',
-            `Backend: ${status.backend_mode || 'pending'}`,
-            `Algorithm: ${status.algorithm || 'refined_optimized_aura'}`,
-            `Preset: ${demoPresets[selectedPreset].label}`,
-            `Requested backend mode: ${backendModes[selectedBackendMode].label}`,
-            `Sensors: ${status.runtime?.bench_sensors || status.total_sensors}`,
-            `Timesteps: ${status.runtime?.bench_steps || 0}`,
-            `Epochs: ${status.training?.epochs || 0}`,
-            `Training time: ${fmt(status.training?.seconds, 3)} s`,
-            `Total runtime: ${fmt(status.runtime?.elapsed_seconds, 3)} s`,
-            `Final loss: ${fmt(status.training?.final_loss, 6)}`,
-            '',
-            '## Intelligent AURA',
-            `Power saved: ${fmt(aura?.power_saved_pct)}%`,
-            `Bandwidth saved: ${fmt(aura?.power_saved_pct)}%`,
-            `Active sensors: ${fmt(aura?.active_sensor_pct)}%`,
-            `Anomaly recall: ${fmt(aura?.anomaly_recall_pct)}%`,
-            `Global reconstruction MSE: ${fmt(aura?.global_reconstruction_mse, 8)}`,
-            '',
-            '## Comparison',
-            `LoRaWAN-style anomaly recall: ${fmt(lorawan?.anomaly_recall_pct)}%`,
-            `LoRaWAN-style power saved: ${fmt(lorawan?.power_saved_pct)}%`,
-            `Budget-matched LoRaWAN anomaly recall: ${fmt(fair?.anomaly_recall_pct)}%`,
-            `Budget-matched LoRaWAN power saved: ${fmt(fair?.power_saved_pct)}%`,
-            `NB-IoT-style anomaly recall: ${fmt(nbiot?.anomaly_recall_pct)}%`,
-            `NB-IoT-style power saved: ${fmt(nbiot?.power_saved_pct)}%`,
-            '',
-            '## Presentation Claim',
-            'AURA reduces sensor activity while preserving anomaly visibility and reconstruction quality.',
-            '',
-        ].join('\n');
-        downloadText('aura-presentation-summary.md', summary, 'text/markdown');
-    };
-
     return (
         <main className="min-h-screen bg-[#070B10] px-4 py-4 text-[#E6EDF5] md:px-6">
             <div className="mx-auto flex max-w-[1600px] flex-col gap-4">
@@ -1201,23 +2263,18 @@ const ClientOnlyApp: FC = () => {
                             <Satellite size={24} />
                         </div>
                         <div>
-                            <h1 className="text-xl font-semibold tracking-tight text-white md:text-2xl">AURA Gateway Telemetry</h1>
+                            <h1 className="text-xl font-semibold tracking-tight text-white md:text-2xl">AURA Gateway</h1>
                             <p className="text-sm text-[#8EA3B8]">Sensor-network control</p>
                         </div>
-                        <span className="hidden rounded-md border border-[#22C55E]/35 bg-[#22C55E]/10 px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.16em] text-[#86EFAC] md:inline-flex">
-                            Live Prototype
-                        </span>
                     </div>
                     <div className="flex flex-wrap items-center gap-2">
                         <span className="rounded-md border border-[#223044] bg-[#0A111C] px-3 py-2 font-mono text-xs uppercase tracking-[0.14em] text-[#38BDF8]">
-                            {status.backend_mode || 'Pending'}
+                            {displayBackendMode(status.backend_mode)}
                         </span>
                         {!presentationMode && <span className="rounded-md border border-[#223044] bg-[#0A111C] px-3 py-2 font-mono text-xs uppercase tracking-[0.14em] text-[#8EA3B8]">
                             {transport}
                         </span>}
-                        <span className={`rounded-md border px-3 py-2 font-mono text-xs uppercase tracking-[0.14em] ${phaseColorClass(status)}`}>
-                            {phaseLabel(status)}
-                        </span>
+                        <ReplaySpeedControl speed={effectiveReplaySpeed} disabled={false} onChange={handleReplaySpeedChange} />
                         <button
                             onClick={() => setPresentationMode(value => !value)}
                             className={`rounded-md border px-3 py-2 text-sm font-semibold transition ${
@@ -1229,30 +2286,21 @@ const ClientOnlyApp: FC = () => {
                             {presentationMode ? 'Presentation' : 'Technical'}
                         </button>
                         <button
-                            onClick={() => setCompactMode(value => !value)}
-                            className={`rounded-md border px-3 py-2 text-sm font-semibold transition ${
-                                compactMode
-                                    ? 'border-[#FACC15]/50 bg-[#FACC15]/10 text-[#FDE68A]'
-                                    : 'border-[#223044] bg-[#121C2A] text-[#8EA3B8] hover:border-[#64748B] hover:text-[#E6EDF5]'
-                            }`}
+                            onClick={handlePresentationModeStart}
+                            disabled={status.is_running}
+                            className="rounded-md border border-[#22C55E]/50 bg-[#22C55E]/10 px-3 py-2 text-sm font-semibold text-[#86EFAC] transition hover:bg-[#22C55E]/18 disabled:cursor-not-allowed disabled:opacity-50"
                         >
-                            {compactMode ? 'Compact On' : 'Compact'}
+                            Presentation Mode
+                        </button>
+                        <button
+                            onClick={handleResetDemo}
+                            className="rounded-md border border-[#223044] bg-[#121C2A] px-3 py-2 text-sm font-semibold text-[#8EA3B8] transition hover:border-[#64748B] hover:text-[#E6EDF5]"
+                        >
+                            Reset Demo
                         </button>
                         <button onClick={handleStartPause} className="inline-flex items-center gap-2 rounded-md bg-[#38BDF8] px-4 py-2 text-sm font-semibold text-[#03111C] transition hover:bg-[#7DD3FC]">
                             {status.is_running ? <Pause size={16} /> : <Play size={16} />}
                             {status.is_running ? 'Pause' : 'Start'}
-                        </button>
-                        <button onClick={handleReset} className="inline-flex items-center gap-2 rounded-md border border-[#223044] bg-[#121C2A] px-4 py-2 text-sm font-semibold text-[#E6EDF5] transition hover:border-[#64748B]">
-                            <RotateCcw size={16} /> Reset
-                        </button>
-                        {!presentationMode && <button onClick={exportJson} className="inline-flex items-center gap-2 rounded-md border border-[#22C55E]/40 bg-[#22C55E]/10 px-3 py-2 text-sm font-semibold text-[#22C55E] transition hover:bg-[#22C55E]/20">
-                            <Download size={16} /> JSON
-                        </button>}
-                        {!presentationMode && <button onClick={exportCsv} className="inline-flex items-center gap-2 rounded-md border border-[#22C55E]/40 bg-[#22C55E]/10 px-3 py-2 text-sm font-semibold text-[#22C55E] transition hover:bg-[#22C55E]/20">
-                            CSV
-                        </button>}
-                        <button onClick={exportSummary} className="inline-flex items-center gap-2 rounded-md border border-[#22C55E]/40 bg-[#22C55E]/10 px-3 py-2 text-sm font-semibold text-[#22C55E] transition hover:bg-[#22C55E]/20">
-                            Summary
                         </button>
                     </div>
                 </header>
@@ -1263,7 +2311,7 @@ const ClientOnlyApp: FC = () => {
 
                 <nav className="flex flex-wrap items-center gap-2 rounded-lg border border-[#223044] bg-[#0E1520] p-2">
                     <div className="flex flex-wrap gap-2">
-                        {appTabs.map(tab => {
+                        {appTabs.filter(tab => !tab.technicalOnly || !presentationMode).map(tab => {
                             const active = activeTab === tab.key;
                             return (
                                 <button
@@ -1337,6 +2385,29 @@ const ClientOnlyApp: FC = () => {
                         </div>
                 </section>}
 
+                {activeTab === 'playground' && <PlaygroundStudio
+                    status={status}
+                    controls={whatIfControls}
+                    challenge={challengeSettings}
+                    selectedScenario={selectedScenario}
+                    selectedQuestion={selectedQuestion}
+                    selectedBackendMode={selectedBackendMode}
+                    selectedPreset={selectedPreset}
+                    runtimeRows={runtimeComparisonRows}
+                    runtimeComparisonRunning={runtimeComparisonRunning}
+                    advancedOpen={playgroundAdvancedOpen}
+                    onScenario={handleScenarioSelect}
+                    onQuestion={handleQuestionSelect}
+                    onControls={setWhatIfControls}
+                    onChallenge={setChallengeSettings}
+                    onBackendMode={setSelectedBackendMode}
+                    onAdvancedOpen={setPlaygroundAdvancedOpen}
+                    onRun={handleStartPause}
+                    onRerun={handlePlaygroundRerun}
+                    onReset={handleResetDemo}
+                    onCompare={handleRuntimeComparison}
+                />}
+
                 {activeTab === 'live' && <section className={`grid grid-cols-1 gap-4 ${presentationMode ? 'xl:grid-cols-[minmax(0,1.35fr)_minmax(420px,0.75fr)]' : 'xl:grid-cols-[minmax(0,1.55fr)_minmax(360px,0.75fr)]'}`}>
                     <Panel
                         title="Live Prototype Digital Twin"
@@ -1362,12 +2433,24 @@ const ClientOnlyApp: FC = () => {
                             </div>
                         }
                     >
-                        <div className={`${compactMode ? 'h-[340px] md:h-[420px]' : presentationMode ? 'h-[520px] md:h-[660px]' : 'h-[420px] md:h-[520px]'} cursor-grab bg-[#030712] active:cursor-grabbing`}>
+                        <div className={`${compactMode ? 'h-[340px] md:h-[420px]' : presentationMode ? 'h-[520px] md:h-[660px]' : 'h-[420px] md:h-[520px]'} relative cursor-grab bg-[#030712] active:cursor-grabbing`}>
+                            <AnomalyAlert status={status} />
+                            <button
+                                onClick={() => setCompactMode(value => !value)}
+                                className={`absolute right-4 top-4 z-10 rounded-md border px-3 py-2 text-xs font-semibold shadow-[0_12px_30px_rgba(0,0,0,0.35)] transition ${
+                                    compactMode
+                                        ? 'border-[#FACC15]/60 bg-[#FACC15]/15 text-[#FDE68A]'
+                                        : 'border-[#223044] bg-[#0A111C]/90 text-[#8EA3B8] hover:border-[#64748B] hover:text-[#E6EDF5]'
+                                }`}
+                            >
+                                {compactMode ? 'Compact On' : 'Compact'}
+                            </button>
                             <Suspense fallback={<div className="grid h-full place-items-center text-[#8EA3B8]">Loading scene</div>}>
                                 <FarmScene
-                                    sensors={displayedSensors}
-                                    sensorDetails={status.sensor_details}
+                                    sensors={farmSensors}
+                                    sensorDetails={farmSensorDetails}
                                     selectedSensorId={effectiveSelectedSensorId}
+                                    retrainActive={Boolean(status.retrain_policy?.required || status.retrain_policy?.recommended)}
                                     onSelectSensor={setSelectedSensorId}
                                 />
                             </Suspense>
@@ -1376,6 +2459,7 @@ const ClientOnlyApp: FC = () => {
                             <span className="inline-flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-[#38BDF8]" /> Active</span>
                             <span className="inline-flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-[#64748B]" /> Sleeping</span>
                             <span className="inline-flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-[#EF4444]" /> Anomaly</span>
+                            <span className="inline-flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full border border-[#60A5FA]" /> Shadow</span>
                             <span className="inline-flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-[#FACC15]" /> Gateway</span>
                             <span className="ml-auto hidden text-[#5F7288] md:inline">Click a sensor.</span>
                         </div>
@@ -1389,10 +2473,16 @@ const ClientOnlyApp: FC = () => {
                             <TelemetryCard label="Final Loss" value={fmt(status.training?.final_loss, 5)} icon={<BrainCircuit size={18} />} accent="#A78BFA" sub={`${status.training?.epochs || 0} epochs`} />
                         </div>}
                         <Panel title={presentationMode ? 'AURA vs Baselines' : 'Algorithm State'}>
-                            {presentationMode ? <PolicyFaceoff policies={policies} /> : <AlgorithmState status={status} />}
+                            {presentationMode ? <PolicyFaceoff policies={policies} status={status} /> : <AlgorithmState status={status} />}
                         </Panel>
                         {presentationMode && <Panel title="Quality Guardrails">
                             <QualityGuardrails status={status} policies={policies} />
+                        </Panel>}
+                        {presentationMode && <Panel title="Latest Sensor Stream">
+                            <LiveSensorStream status={status} />
+                        </Panel>}
+                        {presentationMode && <Panel title="Live Event Log">
+                            <LiveEventLog status={status} />
                         </Panel>}
                         <Panel title="Sensor Inspector">
                             <SensorInspector status={status} selectedSensorId={effectiveSelectedSensorId} />
@@ -1408,15 +2498,44 @@ const ClientOnlyApp: FC = () => {
                         <BenchmarkTable policies={policies} />
                     </Panel>
 
-                    <Panel title="Power vs Anomaly Recall">
-                        <div className="h-[320px] p-4">
+                    <Panel title="Power Saving vs Anomaly Recall">
+                        <div className="flex flex-wrap gap-3 px-4 pt-4 text-xs text-[#8EA3B8]">
+                            {policyRows.map(row => (
+                                <span key={row.name} className="inline-flex items-center gap-2">
+                                    <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: policyColors[row.name] || '#38BDF8' }} />
+                                    {row.name}
+                                </span>
+                            ))}
+                        </div>
+                        <div className="h-[300px] p-4">
                             {policyRows.length ? (
                                 <ResponsiveContainer width="100%" height="100%">
-                                    <ScatterChart margin={{ top: 10, right: 18, bottom: 10, left: 0 }}>
+                                    <ScatterChart margin={{ top: 10, right: 18, bottom: 18, left: 0 }}>
                                         <CartesianGrid stroke="#223044" strokeDasharray="3 3" />
-                                        <XAxis dataKey="power" name="Power saved" unit="%" stroke="#8EA3B8" tick={{ fill: '#8EA3B8', fontSize: 12 }} />
-                                        <YAxis dataKey="recall" name="Anomaly recall" unit="%" stroke="#8EA3B8" tick={{ fill: '#8EA3B8', fontSize: 12 }} />
-                                        <Tooltip cursor={{ strokeDasharray: '3 3' }} contentStyle={{ background: '#0E1520', border: '1px solid #223044', color: '#E6EDF5' }} />
+                                        <XAxis
+                                            dataKey="power"
+                                            name="Power saved"
+                                            domain={[0, 100]}
+                                            ticks={[0, 25, 50, 75, 100]}
+                                            tickFormatter={value => `${fmt(Number(value), 0)}%`}
+                                            stroke="#8EA3B8"
+                                            tick={{ fill: '#8EA3B8', fontSize: 12 }}
+                                        />
+                                        <YAxis
+                                            dataKey="recall"
+                                            name="Anomaly recall"
+                                            domain={[0, 100]}
+                                            ticks={[0, 25, 50, 75, 100]}
+                                            tickFormatter={value => `${fmt(Number(value), 0)}%`}
+                                            stroke="#8EA3B8"
+                                            tick={{ fill: '#8EA3B8', fontSize: 12 }}
+                                        />
+                                        <Tooltip
+                                            cursor={{ strokeDasharray: '3 3' }}
+                                            formatter={(value, name) => [`${fmt(Number(value))}%`, name === 'power' ? 'Power saved' : 'Anomaly recall']}
+                                            labelFormatter={(_, payload) => payload?.[0]?.payload?.name || ''}
+                                            contentStyle={{ background: '#0E1520', border: '1px solid #223044', color: '#E6EDF5' }}
+                                        />
                                         <Scatter data={policyRows} isAnimationActive={false}>
                                             {policyRows.map(row => <Cell key={row.name} fill={policyColors[row.name] || '#38BDF8'} />)}
                                         </Scatter>
@@ -1452,7 +2571,11 @@ const ClientOnlyApp: FC = () => {
                         </div>
                     </Panel>
 
-                    <Panel title="Runtime And Policy Comparison" action={<AreaChart size={16} className="text-[#8EA3B8]" />}>
+                    <Panel title="Policy Power And Recall" action={<AreaChart size={16} className="text-[#8EA3B8]" />}>
+                        <div className="flex flex-wrap gap-4 px-4 pt-4 text-xs text-[#8EA3B8]">
+                            <span className="inline-flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-sm bg-[#22C55E]" /> Power saved</span>
+                            <span className="inline-flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-sm bg-[#F59E0B]" /> Anomaly recall</span>
+                        </div>
                         <div className="h-[280px] p-4">
                             {policyRows.length ? (
                                 <ResponsiveContainer width="100%" height="100%">
@@ -1525,19 +2648,19 @@ const ClientOnlyApp: FC = () => {
                             )}
                         </div>
                     </Panel>
-                    <Panel title="Method Notes" className="xl:col-span-2">
+                    <Panel title="Algorithm Design Evidence" className="xl:col-span-2">
                         <div className="grid gap-3 p-4 text-sm leading-6 text-[#B8C7D8] md:grid-cols-3">
                             <div className="rounded-md bg-[#0A111C] p-4">
                                 <div className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-[#8EA3B8]">Learning</div>
-                                Gradient descent trains AURA&apos;s thresholds, gates, and sleep behavior under an active-sensor budget.
+                                Gradient descent learns redundancy thresholds, anomaly gates, and sleep behavior under an active-sensor budget.
                             </div>
                             <div className="rounded-md bg-[#0A111C] p-4">
                                 <div className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-[#8EA3B8]">Redundancy</div>
-                                N=2 redundancy specialization.
+                                Pair-cache comparisons identify sensors that can sleep while preserving reconstruction and anomaly visibility.
                             </div>
                             <div className="rounded-md bg-[#0A111C] p-4">
                                 <div className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-[#8EA3B8]">Acceleration</div>
-                                CPU/CUDA acceleration.
+                                The same policy can run through Python, C++ CPU, or fused CUDA/C++ for runtime comparison.
                             </div>
                         </div>
                     </Panel>
@@ -1568,51 +2691,126 @@ const ClientOnlyApp: FC = () => {
                     </Panel>
                 </section>}
 
-                {activeTab === 'hardware' && <section className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(360px,0.8fr)_minmax(0,1.2fr)]">
-                    <Panel title="Hardware Bridge">
-                        <div className="flex flex-wrap gap-2 border-b border-[#223044] px-4 py-3">
-                            <button
-                                onClick={() => sendCommand('hardware/connect', {
-                                    port: status.hardware?.com_port || 'COM16',
-                                    baud_rate: status.hardware?.baud_rate || 115200,
-                                })}
-                                className="rounded-md border border-[#38BDF8]/40 bg-[#38BDF8]/10 px-3 py-2 text-sm font-semibold text-[#7DD3FC] transition hover:bg-[#38BDF8]/20"
-                            >
-                                Connect
-                            </button>
-                            <button
-                                onClick={() => sendCommand('hardware/sync')}
-                                className="rounded-md border border-[#22C55E]/40 bg-[#22C55E]/10 px-3 py-2 text-sm font-semibold text-[#86EFAC] transition hover:bg-[#22C55E]/20"
-                            >
-                                Sync Command
-                            </button>
-                            <button
-                                onClick={() => sendCommand('hardware/disconnect')}
-                                className="rounded-md border border-[#EF4444]/40 bg-[#EF4444]/10 px-3 py-2 text-sm font-semibold text-[#FCA5A5] transition hover:bg-[#EF4444]/20"
-                            >
-                                Disconnect
-                            </button>
+                {activeTab === 'hardware' && <section className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(420px,0.85fr)_minmax(0,1.15fr)]">
+                    <Panel title="Hardware Configuration">
+                        <div className="grid gap-3 p-4">
+                            <div className="grid gap-3 md:grid-cols-3">
+                                <label className="rounded-md bg-[#0A111C] px-3 py-3">
+                                    <div className="mb-2 text-[11px] uppercase tracking-[0.14em] text-[#5F7288]">Target</div>
+                                    <select
+                                        value={hardwareTarget}
+                                        onChange={event => setHardwareTarget(event.target.value as HardwareTarget)}
+                                        className="w-full rounded-md border border-[#223044] bg-[#050A12] px-2 py-2 font-mono text-sm text-[#E6EDF5] outline-none focus:border-[#38BDF8]"
+                                    >
+                                        <option value="esp32_experiment">ESP32 experiment</option>
+                                        <option value="mega_simulation">Mega simulation</option>
+                                    </select>
+                                </label>
+                                <label className="rounded-md bg-[#0A111C] px-3 py-3">
+                                    <div className="mb-2 text-[11px] uppercase tracking-[0.14em] text-[#5F7288]">COM port</div>
+                                    <select
+                                        value={hardwarePort}
+                                        onChange={event => setHardwarePort(event.target.value)}
+                                        className="w-full rounded-md border border-[#223044] bg-[#050A12] px-2 py-2 font-mono text-sm text-[#E6EDF5] outline-none focus:border-[#38BDF8]"
+                                    >
+                                        {hardwarePorts.length ? (
+                                            hardwarePorts.map(port => (
+                                                <option key={port.device} value={port.device}>
+                                                    {port.device}{port.description ? ` - ${port.description}` : ''}
+                                                </option>
+                                            ))
+                                        ) : (
+                                            <option value={hardwarePort}>No ports found</option>
+                                        )}
+                                    </select>
+                                </label>
+                                <label className="rounded-md bg-[#0A111C] px-3 py-3">
+                                    <div className="mb-2 text-[11px] uppercase tracking-[0.14em] text-[#5F7288]">Baud</div>
+                                    <select
+                                        value={hardwareBaudRate}
+                                        onChange={event => setHardwareBaudRate(event.target.value)}
+                                        className="w-full rounded-md border border-[#223044] bg-[#050A12] px-2 py-2 font-mono text-sm text-[#E6EDF5] outline-none focus:border-[#38BDF8]"
+                                    >
+                                        <option value="9600">9600</option>
+                                        <option value="57600">57600</option>
+                                        <option value="115200">115200</option>
+                                        <option value="230400">230400</option>
+                                    </select>
+                                </label>
+                            </div>
+                            <div className="flex flex-wrap gap-2">
+                                <button
+                                    onClick={refreshHardwarePorts}
+                                    disabled={hardwarePortsLoading}
+                                    className="rounded-md border border-[#64748B]/40 bg-[#64748B]/10 px-3 py-2 text-sm font-semibold text-[#CBD5E1] transition hover:bg-[#64748B]/20 disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                    {hardwarePortsLoading ? 'Scanning...' : 'Refresh Ports'}
+                                </button>
+                                <button
+                                    onClick={handleHardwareConnect}
+                                    disabled={!hardwarePorts.length}
+                                    className="rounded-md border border-[#38BDF8]/40 bg-[#38BDF8]/10 px-3 py-2 text-sm font-semibold text-[#7DD3FC] transition hover:bg-[#38BDF8]/20 disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                    Connect
+                                </button>
+                                <button
+                                    onClick={() => sendCommand('hardware/sync')}
+                                    className="rounded-md border border-[#22C55E]/40 bg-[#22C55E]/10 px-3 py-2 text-sm font-semibold text-[#86EFAC] transition hover:bg-[#22C55E]/20"
+                                >
+                                    Sync
+                                </button>
+                                <button
+                                    onClick={() => sendCommand('hardware/disconnect')}
+                                    className="rounded-md border border-[#EF4444]/40 bg-[#EF4444]/10 px-3 py-2 text-sm font-semibold text-[#FCA5A5] transition hover:bg-[#EF4444]/20"
+                                >
+                                    Disconnect
+                                </button>
+                            </div>
+                            {hardwarePortsError && <div className="rounded-md border border-[#F59E0B]/45 bg-[#F59E0B]/10 px-3 py-2 text-xs text-[#FDE68A]">{hardwarePortsError}</div>}
                         </div>
+                    </Panel>
+                    <Panel title="Connection Status">
                         <HardwarePanel status={status} />
                     </Panel>
-                    <Panel title="Deployment Link">
-                        <div className="grid gap-3 p-4 text-sm leading-6 text-[#B8C7D8]">
-                            <div className="rounded-md bg-[#0A111C] p-4">
-                                Gateway command stream.
-                            </div>
-                            <div className="rounded-md bg-[#0A111C] p-4 font-mono text-xs text-[#22C55E]">
-                                {status.hardware?.last_command || 'pending'}
-                            </div>
-                            <div className="rounded-md bg-[#0A111C] p-4">
-                                <span className="font-mono text-[#E6EDF5]">0</span> active/on, <span className="font-mono text-[#E6EDF5]">1</span> sleep/off.
-                            </div>
-                        </div>
+                    <Panel title={hardwareTarget === 'esp32_experiment' ? 'ESP32 Experiment Pins' : 'Mega Simulation Pins'}>
+                        {hardwareTarget === 'esp32_experiment' ? (
+                            <Esp32ExperimentPanel
+                                ldr1Pin={ldr1Pin}
+                                ldr2Pin={ldr2Pin}
+                                led1Pin={led1Pin}
+                                led2Pin={led2Pin}
+                                threshold={redundancyThreshold}
+                                onLdr1Pin={setLdr1Pin}
+                                onLdr2Pin={setLdr2Pin}
+                                onLed1Pin={setLed1Pin}
+                                onLed2Pin={setLed2Pin}
+                                onThreshold={setRedundancyThreshold}
+                            />
+                        ) : (
+                            <MegaSimulationPanel
+                                startPin={megaStartPin}
+                                nodeCount={megaNodeCount}
+                                activeBit={megaActiveBit}
+                                sleepBit={megaSleepBit}
+                                onStartPin={setMegaStartPin}
+                                onNodeCount={setMegaNodeCount}
+                                onActiveBit={setMegaActiveBit}
+                                onSleepBit={setMegaSleepBit}
+                            />
+                        )}
+                    </Panel>
+                    <Panel title="Command Preview">
+                        <ArduinoCommandStream
+                            status={status}
+                            startPin={Number(megaStartPin) || 22}
+                            nodeCount={Math.max(1, Math.min(Number(megaNodeCount) || 28, 28))}
+                        />
                     </Panel>
                 </section>}
 
                 {activeTab === 'diagnostics' && <section className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(420px,0.85fr)]">
                     <Panel title="Diagnostics And Fallbacks" action={<AlertTriangle size={16} className="text-[#F59E0B]" />}>
-                        <DiagnosticsPanel diagnostics={status.diagnostics} status={status} transport={transport} />
+                        <DiagnosticsPanel diagnostics={status.diagnostics} status={status} transport={transport} onRetrain={() => sendCommand('retrain')} />
                     </Panel>
                     <Panel title="Runtime Fallback Model">
                         <div className="grid gap-3 p-4 text-sm leading-6 text-[#B8C7D8]">
@@ -1625,27 +2823,6 @@ const ClientOnlyApp: FC = () => {
                             <div className="rounded-md bg-[#0A111C] p-4">
                                 Preview mode until connected.
                             </div>
-                        </div>
-                    </Panel>
-                </section>}
-
-                {activeTab === 'export' && <section className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(360px,0.8fr)_minmax(0,1.2fr)]">
-                    <Panel title="Export Evidence">
-                        <div className="grid gap-3 p-4">
-                            <button onClick={exportJson} className="rounded-md border border-[#22C55E]/40 bg-[#22C55E]/10 px-4 py-3 text-left text-sm font-semibold text-[#22C55E] transition hover:bg-[#22C55E]/20">
-                                Export raw dashboard JSON
-                            </button>
-                            <button onClick={exportCsv} className="rounded-md border border-[#22C55E]/40 bg-[#22C55E]/10 px-4 py-3 text-left text-sm font-semibold text-[#22C55E] transition hover:bg-[#22C55E]/20">
-                                Export benchmark CSV
-                            </button>
-                            <button onClick={exportSummary} className="rounded-md border border-[#22C55E]/40 bg-[#22C55E]/10 px-4 py-3 text-left text-sm font-semibold text-[#22C55E] transition hover:bg-[#22C55E]/20">
-                                Export presentation summary
-                            </button>
-                        </div>
-                    </Panel>
-                    <Panel title="Panel Claim">
-                        <div className="p-4 text-sm leading-7 text-[#B8C7D8]">
-                            AURA edge-gateway benchmark summary.
                         </div>
                     </Panel>
                 </section>}

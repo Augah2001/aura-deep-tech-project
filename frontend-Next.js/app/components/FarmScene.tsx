@@ -11,8 +11,9 @@ const FarmScene: FC<{
     sensors: Sensor[];
     sensorDetails?: SensorDetail[];
     selectedSensorId?: number | null;
+    retrainActive?: boolean;
     onSelectSensor?: (id: number) => void;
-}> = memo(({ sensors, sensorDetails = [], selectedSensorId = null, onSelectSensor }) => {
+}> = memo(({ sensors, sensorDetails = [], selectedSensorId = null, retrainActive = false, onSelectSensor }) => {
     const [groundTexture, setGroundTexture] = useState<THREE.CanvasTexture | null>(null);
 
     useEffect(() => {
@@ -87,6 +88,7 @@ const FarmScene: FC<{
                 sensorDetails={sensorDetails}
                 groundTexture={groundTexture}
                 selectedSensorId={selectedSensorId}
+                retrainActive={retrainActive}
                 onSelectSensor={onSelectSensor}
             />
             <OrbitControls enablePan={true} enableZoom={true} minPolarAngle={Math.PI / 8} maxPolarAngle={Math.PI / 2.1} minDistance={15} maxDistance={70} />

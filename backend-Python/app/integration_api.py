@@ -59,21 +59,26 @@ def _coerce_readings(readings: list[float] | dict[str, float], node_ids: list[in
 def _policy_from_runtime(node_ids: list[int]) -> dict[str, Any]:
     status = runtime.status()
     sensor_states = {int(sensor["id"]): bool(sensor.get("is_off")) for sensor in status.get("sensors", [])}
+    shadow_states = {int(sensor["id"]): bool(sensor.get("is_shadow")) for sensor in status.get("sensors", [])}
     hardware = status.get("hardware") or {}
     default_active = not sensor_states
 
     policies = []
+    hardware_bits = (hardware.get("last_command") or "").split(",")
     command_bits = []
     for node_id in node_ids:
         is_sleeping = sensor_states.get(node_id, False if default_active else False)
-        bit = "1" if is_sleeping else "0"
+        bit = hardware_bits[node_id].strip() if node_id < len(hardware_bits) and hardware_bits[node_id].strip() in {"0", "1"} else ("1" if is_sleeping else "0")
+        is_shadow = shadow_states.get(node_id, False)
         command_bits.append(bit)
         policies.append(
             {
                 "node_id": node_id,
                 "command_bit": bit,
-                "state": "sleep" if is_sleeping else "active",
-                "reason": "learned_runtime_mask" if node_id in sensor_states else "default_active_until_visible_in_runtime",
+                "policy_state": "sleep" if is_sleeping else "active",
+                "hardware_state": "active" if bit == "0" else "sleep",
+                "shadow_validation": is_shadow,
+                "reason": "shadow_validation_holdout" if is_shadow else ("learned_runtime_mask" if node_id in sensor_states else "default_active_until_visible_in_runtime"),
             }
         )
 
@@ -97,6 +102,8 @@ def _policy_from_runtime(node_ids: list[int]) -> dict[str, Any]:
             "last_ack": hardware.get("last_ack"),
             "last_error": hardware.get("last_error"),
         },
+        "shadow_validation": status.get("shadow_validation"),
+        "retrain_policy": status.get("retrain_policy"),
     }
 
 
